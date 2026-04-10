@@ -14,8 +14,6 @@ Agents check the lore before asking you domain questions. When they learn someth
 
 ### 1. Install the plugin
 
-Add the marketplace and install:
-
 ```
 /plugin marketplace add leviosa-medical/lore
 /plugin install lore@lore
@@ -35,6 +33,7 @@ This creates:
 - `lore/config.yaml` — project-specific domains and routing guidance
 - `lore/operations.jsonl` — append-only operation log
 - `.claude/rules/lore.md` — agent integration rule
+- `.claude/settings.json` — marketplace and plugin config (so teammates get auto-prompted)
 
 ### 3. Seed initial knowledge
 

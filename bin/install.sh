@@ -78,6 +78,26 @@ CONFIGEOF
   echo "Created: lore/ with subdirectories, index.md, operations.jsonl, config.yaml"
 fi
 
+# --- Add marketplace and plugin to project settings ---
+
+SETTINGS_DIR="$PROJECT_ROOT/.claude"
+SETTINGS_FILE="$SETTINGS_DIR/settings.json"
+
+mkdir -p "$SETTINGS_DIR"
+
+node -e "
+  const fs = require('fs');
+  const f = '$SETTINGS_FILE';
+  const s = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+  s.extraKnownMarketplaces ??= {};
+  s.extraKnownMarketplaces.lore ??= { source: 'github', repo: 'leviosa-medical/lore' };
+  s.enabledPlugins ??= {};
+  s.enabledPlugins['lore@lore'] ??= true;
+  fs.writeFileSync(f, JSON.stringify(s, null, 2) + '\n');
+"
+
+echo "Updated: .claude/settings.json (marketplace + plugin enabled)"
+
 # --- Add agent integration rule ---
 
 mkdir -p "$RULE_DIR"
