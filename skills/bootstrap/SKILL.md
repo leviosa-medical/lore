@@ -11,17 +11,19 @@ Seed the lore knowledge base from existing project artifacts. This is a one-time
 
 ## Process
 
-1. **Discover existing knowledge sources.** Read:
+1. **Preflight check.** Call `lore_list` to verify the MCP server is running. If it fails, stop immediately and tell the user: "The lore MCP server isn't available. Please restart Claude Code and try again."
+
+2. **Discover existing knowledge sources.** Read:
    - `CLAUDE.md` files (root and any nested)
    - `.claude/rules/*.md` files
    - `skills/*/SKILL.md` files
    - Any other documentation files in the project root (README.md, docs/, etc.)
 
-2. **Classify each instruction.** For every distinct piece of knowledge found, classify it as one of:
+3. **Classify each instruction.** For every distinct piece of knowledge found, classify it as one of:
    - **Imperative** (stays in CLAUDE.md): "always do X", "never do Y", coding conventions, tool preferences, workflow instructions
    - **Declarative** (candidate for lore): "the system works like X because Y", business rules, domain context, entity definitions, architectural decisions with rationale
 
-3. **Group declarative knowledge by domain.** Use your judgment to infer domain groupings (e.g., "billing", "tenants", "scheduling"). Don't use a fixed heuristic — classify based on the content. For each group, determine the appropriate lore type:
+4. **Group declarative knowledge by domain.** Use your judgment to infer domain groupings (e.g., "billing", "tenants", "scheduling"). Don't use a fixed heuristic — classify based on the content. For each group, determine the appropriate lore type:
    - `concept` — Domain ideas, frameworks, methods
    - `entity` — Organizations, products, services
    - `rule` — Business rules, validation logic, regulatory constraints
@@ -29,20 +31,20 @@ Seed the lore knowledge base from existing project artifacts. This is a one-time
    - `decision` — Architectural/business decisions with rationale
    - `glossary` — Domain vocabulary mapped to code concepts
 
-4. **Present grouped knowledge to the user.** Show each group with:
+5. **Present grouped knowledge to the user.** Show each group with:
    - Inferred domain name
    - Proposed lore entries (title, type, summary)
    - Ask: confirm, correct, or skip each group
 
-5. **Write confirmed entries.** For each confirmed entry:
+6. **Write confirmed entries.** For each confirmed entry:
    - **ALWAYS use the `lore_write` MCP tool** — never use Write or Edit to create files in `lore/` directly. `lore_write` maintains the operations log and index; bypassing it leaves the audit trail empty.
    - Set `confidence: verified` for user-confirmed entries
    - Set source to `"bootstrap:CLAUDE.md"` or appropriate source path
    - For entries the user didn't review, use `confidence: inferred`
 
-6. **Suggest CLAUDE.md cleanup.** Present a summary of what declarative knowledge was moved to lore. Suggest specific lines that could be removed from CLAUDE.md. **Never modify CLAUDE.md directly** — present the suggestions and let the user decide.
+7. **Suggest CLAUDE.md cleanup.** Present a summary of what declarative knowledge was moved to lore. Suggest specific lines that could be removed from CLAUDE.md. **Never modify CLAUDE.md directly** — present the suggestions and let the user decide.
 
-7. **Create config.yaml.** Write `lore/config.yaml` with discovered domains and the standard routing guidance:
+8. **Create config.yaml.** Write `lore/config.yaml` with discovered domains and the standard routing guidance:
    ```yaml
    domains:
      - <discovered-domain-1>

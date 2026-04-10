@@ -1,7 +1,7 @@
 {
   "name": "lore",
   "description": "Domain knowledge plugin — persistent, confidence-tracked lore per project",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "Bragi Bergþórsson"
   }
