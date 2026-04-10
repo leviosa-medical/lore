@@ -57,4 +57,4 @@ Seed the lore knowledge base from existing project artifacts. This is a one-time
 - **Never modify CLAUDE.md, .claude/rules/, or any file outside lore/** — only suggest changes
 - Every lore entry must have a traceable source
 - If no declarative knowledge is found, say so — don't invent entries
-- If the lore directory doesn't exist, tell the user to run the install script first
+- If the lore directory doesn't exist, tell the user to run `/lore:init` first
