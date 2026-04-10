@@ -21,10 +21,10 @@ Agents check the lore before asking you domain questions. When they learn someth
 
 ### 2. Set up a project
 
-From your target project's root, run the install script (available on PATH after plugin install):
+From your target project's root:
 
-```bash
-install.sh
+```
+/lore:init
 ```
 
 This creates:
@@ -56,6 +56,7 @@ The agent rule in `.claude/rules/lore.md` instructs agents to:
 
 | Skill | Purpose |
 |---|---|
+| `/lore:init` | Set up lore in the current project |
 | `/lore:bootstrap` | One-time seeding from existing CLAUDE.md and docs |
 | `/lore:capture` | Capture domain knowledge from conversation |
 | `/lore:resolve` | Resolve git merge conflicts and contradictions in lore entries |
