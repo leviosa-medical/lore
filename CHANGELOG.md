@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-10
+
+### Added
+
+- **PreToolUse hook** — blocks direct `Write`/`Edit` to lore entry files (`lore/<type>/*.md`), directing agents to use `lore_write` instead. Ensures the operations log and index stay in sync. Lives in `hooks/hooks.json` so it disappears cleanly on plugin removal.
+
+### Fixed
+
+- **`/lore:bootstrap` skill** — tightened instructions to explicitly require `lore_write` for entry creation, preventing silent bypass of the operations audit trail
+
 ## [0.2.1] - 2026-04-10
 
 ### Fixed

@@ -1,6 +1,17 @@
 {
-  "description": "Lore retrospective hook — prompts for domain knowledge corrections after task completion",
+  "description": "Lore plugin hooks — enforce lore_write usage and prompt for domain knowledge corrections",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty'); if echo \"$FILE\" | grep -qE 'lore/(concepts|entities|rules|roles|decisions|glossary)/.*\\.md$'; then echo 'BLOCKED: Do not write lore entry files directly with Write/Edit. Use the lore_write MCP tool instead — it maintains the operations log and index.' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "Task (completed|done|finished)",
