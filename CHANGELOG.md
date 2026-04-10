@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-10
+
+### Fixed
+
+- **`/lore:init` install script** — fixed `SCRIPT_DIR` resolving to wrong directory level after move from `bin/` to `skills/init/`
+- **`extraKnownMarketplaces` schema** — `source` field now uses the nested object format required by Claude Code settings validation
+
 ## [0.2.0] - 2026-04-10
 
 ### Added
