@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/lore:init`** — now explicitly tells users to restart Claude Code before running bootstrap, since the MCP server and agent rule aren't available until after a restart
+- **`/lore:bootstrap`** — preflight check calls `lore_list` to verify the MCP server is running before proceeding; stops with a clear restart message if it isn't
 
 ## [0.3.0] - 2026-04-10
 
