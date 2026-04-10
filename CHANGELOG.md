@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-10
+
+### Added
+
+- **Zettelkasten knowledge graph** — lore entries now support `[[wikilinks]]` for linking related concepts, enabling a connected knowledge graph rather than isolated pages
+- **BM25 scoring** — **`lore_search`** and **`lore_query`** now use BM25 ranking instead of naive keyword proportion, producing significantly better search relevance
+- **Inbound link boost** — well-linked hub pages rank higher in search results via log-dampened link-count scoring, so central concepts surface first
+- **1-hop wikilink expansion** — **`lore_query`** automatically includes linked neighbor pages when initial results are thin (fewer than 3 qualifying results), surfacing related context without manual browsing
+- **Source pages** — new `source` page type preserves original documents verbatim as first-class provenance records. Source pages track which entries were derived from them via `derived_entries` frontmatter
+- **Backlink maintenance** — when a derived entry references a source page in its `sources` array (e.g., `"source:Source - CLAUDE.md"`), the source page's `derived_entries` are automatically updated
+- **`lore_write` schema extensions** — three new optional fields: `derived_entries`, `source_url`, `source_file` (non-breaking; only written for source-type pages)
+- **PreToolUse hook** now blocks direct writes to `lore/sources/` in addition to existing type directories
+
+### Changed
+
+- **`lore_read` resolution chain** — now resolves by title first, slug second, direct path third (was path-first). Title-first is correct for a wikilink-centric system where users reference pages by name
+- **`lore_query` internals** — fully rewritten to use BM25 + link boost + confidence bonus + 1-hop expansion pipeline, replacing the index-scan + keyword-overlap approach
+- **`lore_search` internals** — replaced keyword proportion scoring with BM25 + inbound link-count boost + confidence bonus
+- **`/lore:bootstrap` skill** — rewritten for atomic decomposition: creates source pages preserving original content, then decomposes into atomic wikilinked entries with per-entry user confirmation
+- **`lore_list` type filter** — now accepts `"source"` as a valid type
+
 ## [0.3.1] - 2026-04-10
 
 ### Fixed

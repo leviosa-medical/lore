@@ -19,6 +19,7 @@ const VALID_TYPES = [
   "role",
   "decision",
   "glossary",
+  "source",
 ] as const;
 type LoreType = (typeof VALID_TYPES)[number];
 
@@ -32,6 +33,7 @@ const TYPE_DIRS: Record<LoreType, string> = {
   role: "roles",
   decision: "decisions",
   glossary: "glossary",
+  source: "sources",
 };
 
 // --- Helpers ---
@@ -82,6 +84,9 @@ interface Frontmatter {
   sources?: string[];
   confirmed_by?: string[];
   tags?: string[];
+  derived_entries?: string[];
+  source_url?: string;
+  source_file?: string;
   [key: string]: string | string[] | undefined;
 }
 
@@ -133,6 +138,11 @@ function buildPage(
   writeField("sources", frontmatter.sources);
   writeField("confirmed_by", frontmatter.confirmed_by);
   writeField("tags", frontmatter.tags);
+  if (frontmatter.type === "source") {
+    writeField("derived_entries", frontmatter.derived_entries);
+    writeField("source_url", frontmatter.source_url);
+    writeField("source_file", frontmatter.source_file);
+  }
 
   lines.push("---", "", body, "");
   return lines.join("\n");
@@ -183,6 +193,191 @@ function confidenceBonus(confidence: string | undefined): number {
   return 0;
 }
 
+// --- BM25 Scoring ---
+
+interface ScoredResult {
+  path: string;
+  title: string;
+  score: number;
+  content: string;
+  frontmatter: Frontmatter;
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 2);
+}
+
+function computeBM25Scores(
+  query: string,
+  documents: Array<{
+    path: string;
+    title: string;
+    content: string;
+    frontmatter: Frontmatter;
+  }>,
+  k1 = 1.2,
+  b = 0.75
+): ScoredResult[] {
+  const queryTerms = [...new Set(tokenize(query))];
+  if (queryTerms.length === 0 || documents.length === 0) return [];
+
+  const N = documents.length;
+
+  // Tokenize all documents and compute corpus stats
+  const docTokens: string[][] = [];
+  let totalLength = 0;
+  for (const doc of documents) {
+    const searchText = doc.title + " " + extractBody(doc.content);
+    const tokens = tokenize(searchText);
+    docTokens.push(tokens);
+    totalLength += tokens.length;
+  }
+  const avgdl = totalLength / N;
+
+  // Compute document frequency per query term
+  const df = new Map<string, number>();
+  for (const term of queryTerms) {
+    let count = 0;
+    for (const tokens of docTokens) {
+      if (tokens.includes(term)) count++;
+    }
+    df.set(term, count);
+  }
+
+  // Score each document
+  const results: ScoredResult[] = [];
+  for (let i = 0; i < documents.length; i++) {
+    const doc = documents[i];
+    const tokens = docTokens[i];
+    const dl = tokens.length;
+
+    // Count term frequencies
+    const tfMap = new Map<string, number>();
+    for (const token of tokens) {
+      tfMap.set(token, (tfMap.get(token) || 0) + 1);
+    }
+
+    let score = 0;
+    for (const term of queryTerms) {
+      const termDf = df.get(term) || 0;
+      const idf = Math.log((N - termDf + 0.5) / (termDf + 0.5) + 1);
+      const tf = tfMap.get(term) || 0;
+      score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl)));
+    }
+
+    if (score > 0) {
+      results.push({
+        path: doc.path,
+        title: doc.title,
+        score,
+        content: doc.content,
+        frontmatter: doc.frontmatter,
+      });
+    }
+  }
+
+  return results;
+}
+
+// --- Wikilink & Graph Mechanics ---
+
+/** Strip code blocks from content before extracting wikilinks. */
+function extractWikilinks(content: string): string[] {
+  // Strip fenced code blocks
+  let stripped = content.replace(/^```[\s\S]*?^```/gm, "");
+  // Strip inline code
+  stripped = stripped.replace(/`[^`]+`/g, "");
+  // Extract [[wikilinks]]
+  const matches = [...stripped.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
+  return [...new Set(matches)];
+}
+
+/** Resolve a wikilink text to a file path. Title match → slug match → direct path. */
+function resolveWikilink(
+  linkText: string,
+  titleMap: Map<string, string>,
+  slugMap: Map<string, string>
+): string | null {
+  // 1. Title match (case-insensitive)
+  const titlePath = titleMap.get(linkText.toLowerCase());
+  if (titlePath) return titlePath;
+
+  // 2. Slug match
+  const slug = slugify(linkText);
+  const slugPath = slugMap.get(slug);
+  if (slugPath) return slugPath;
+
+  // 3. Direct path match (contains / or ends with .md)
+  if (linkText.includes("/") || linkText.endsWith(".md")) {
+    const directPath = path.join(LORE_PATH, linkText);
+    // We can't do async here, so we'll handle this in the caller
+    return `__direct__${directPath}`;
+  }
+
+  return null;
+}
+
+/** Build title→path and slug→path maps from all documents. Alphabetical tiebreaker for duplicates. */
+function buildLookupMaps(
+  documents: Array<{ path: string; title: string }>
+): { titleMap: Map<string, string>; slugMap: Map<string, string> } {
+  const titleMap = new Map<string, string>();
+  const slugMap = new Map<string, string>();
+
+  // Sort documents by path alphabetically so first encountered wins tiebreaker
+  const sorted = [...documents].sort((a, b) => a.path.localeCompare(b.path));
+
+  for (const doc of sorted) {
+    const titleKey = doc.title.toLowerCase();
+    if (!titleMap.has(titleKey)) {
+      titleMap.set(titleKey, doc.path);
+    }
+    const slug = slugify(doc.title);
+    if (!slugMap.has(slug)) {
+      slugMap.set(slug, doc.path);
+    }
+  }
+
+  return { titleMap, slugMap };
+}
+
+/** Count inbound links for each page by title. */
+function buildInboundCounts(
+  documents: Array<{ title: string; content: string }>
+): Map<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const doc of documents) {
+    const body = extractBody(doc.content);
+    const links = extractWikilinks(body);
+    // Count distinct source pages per target (deduplicate links within a single document)
+    const uniqueTargets = new Set(links.map((l) => l.toLowerCase()));
+    for (const target of uniqueTargets) {
+      counts.set(target, (counts.get(target) || 0) + 1);
+    }
+  }
+
+  return counts;
+}
+
+/** Apply log-dampened inbound link boost to scored results. */
+function applyLinkBoost(
+  results: ScoredResult[],
+  inboundCounts: Map<string, number>,
+  weight = 0.2
+): ScoredResult[] {
+  return results.map((r) => {
+    const count = inboundCounts.get(r.title.toLowerCase()) || 0;
+    return {
+      ...r,
+      score: r.score * (1 + weight * Math.log(1 + count)),
+    };
+  });
+}
+
 // --- Server ---
 
 const server = new McpServer({
@@ -203,21 +398,50 @@ server.registerTool(
     },
   },
   async ({ page }) => {
-    // Try exact relative path first
-    let filePath = path.join(LORE_PATH, page);
-    if (!page.endsWith(".md")) filePath += ".md";
+    // Build lookup maps for wikilink-style resolution
+    const allFiles = await findMarkdownFiles(LORE_PATH);
+    const documents: Array<{ path: string; title: string }> = [];
+    const contentCache = new Map<string, string>();
 
-    let content = await readFile(filePath);
-
-    // If not found by path, search by title
-    if (!content) {
-      const found = await findPageByTitle(page);
-      if (found) {
-        [filePath, content] = found;
-      }
+    for (const f of allFiles) {
+      const content = await readFile(f);
+      if (!content) continue;
+      const fm = parseFrontmatter(content);
+      const relPath = path.relative(LORE_PATH, f);
+      documents.push({
+        path: relPath,
+        title: (fm?.title as string) || path.basename(f, ".md"),
+      });
+      contentCache.set(relPath, content);
     }
 
+    const { titleMap, slugMap } = buildLookupMaps(documents);
+
+    // Resolution chain: title → slug → direct path
+    let resolved = resolveWikilink(page, titleMap, slugMap);
+    let filePath: string | null = null;
+    let content: string | null = null;
+
+    if (resolved && resolved.startsWith("__direct__")) {
+      // Direct path resolution
+      const directPath = resolved.slice("__direct__".length);
+      content = await readFile(directPath);
+      if (content) filePath = directPath;
+    } else if (resolved) {
+      // Title or slug match — resolved is a relative path
+      content = contentCache.get(resolved) || null;
+      if (content) filePath = path.join(LORE_PATH, resolved);
+    }
+
+    // Fallback: try as explicit relative path (backwards compat)
     if (!content) {
+      let tryPath = path.join(LORE_PATH, page);
+      if (!page.endsWith(".md")) tryPath += ".md";
+      content = await readFile(tryPath);
+      if (content) filePath = tryPath;
+    }
+
+    if (!content || !filePath) {
       return {
         content: [{ type: "text" as const, text: `Page not found: ${page}` }],
         isError: true,
@@ -252,19 +476,16 @@ server.registerTool(
   async ({ query, domain, confidence, max_results }) => {
     const limit = max_results ?? 10;
     const allFiles = await findMarkdownFiles(LORE_PATH);
-    const keywords = query
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((w) => w.length > 2);
+    const keywords = tokenize(query);
 
-    const results: {
-      title: string;
+    // Load all documents, applying filters
+    const documents: Array<{
       path: string;
-      confidence: string;
-      excerpt: string;
-      score: number;
+      title: string;
+      content: string;
+      frontmatter: Frontmatter;
       updated: string;
-    }[] = [];
+    }> = [];
 
     for (const f of allFiles) {
       const content = await readFile(f);
@@ -272,50 +493,42 @@ server.registerTool(
       const fm = parseFrontmatter(content);
       if (!fm) continue;
 
-      const pageTitle = (fm.title as string) || path.basename(f, ".md");
       const pageDomain = fm.domain as string | undefined;
       const pageConfidence = (fm.confidence as string) || "assumed";
-      const pageUpdated = (fm.updated as string) || "";
 
-      // Apply filters
       if (domain && pageDomain !== domain) continue;
       if (confidence && pageConfidence !== confidence) continue;
 
-      // Score: keyword match proportion in title + body
-      const searchText = (pageTitle + " " + extractBody(content)).toLowerCase();
-      const matchCount = keywords.filter((kw) =>
-        searchText.includes(kw)
-      ).length;
-      if (matchCount === 0) continue;
-
-      const keywordScore = matchCount / keywords.length;
-      const score = keywordScore + confidenceBonus(pageConfidence);
-
-      // Extract excerpt around first match
-      const lower = content.toLowerCase();
-      const firstKw = keywords.find((kw) => lower.includes(kw)) || "";
-      const idx = lower.indexOf(firstKw);
-      const start = Math.max(0, idx - 100);
-      const end = Math.min(content.length, idx + firstKw.length + 100);
-      const excerpt =
-        (start > 0 ? "..." : "") +
-        content.slice(start, end).replace(/\n/g, " ") +
-        (end < content.length ? "..." : "");
-
-      results.push({
-        title: pageTitle,
+      documents.push({
         path: path.relative(LORE_PATH, f),
-        confidence: pageConfidence,
-        excerpt,
-        score,
-        updated: pageUpdated,
+        title: (fm.title as string) || path.basename(f, ".md"),
+        content,
+        frontmatter: fm,
+        updated: (fm.updated as string) || "",
       });
     }
+
+    // BM25 scoring
+    let scored = computeBM25Scores(query, documents);
+
+    // Inbound link boost
+    const inboundCounts = buildInboundCounts(
+      documents.map((d) => ({ title: d.title, content: d.content }))
+    );
+    scored = applyLinkBoost(scored, inboundCounts);
+
+    // Confidence bonus (additive, after BM25 + link boost)
+    const results = scored.map((r) => ({
+      ...r,
+      score: r.score + confidenceBonus(r.frontmatter.confidence),
+    }));
 
     // Sort by score desc, then by updated desc
     results.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
-      return b.updated.localeCompare(a.updated);
+      const aUpdated = (a.frontmatter.updated as string) || "";
+      const bUpdated = (b.frontmatter.updated as string) || "";
+      return bUpdated.localeCompare(aUpdated);
     });
 
     const top = results.slice(0, limit);
@@ -332,10 +545,21 @@ server.registerTool(
     }
 
     const text = top
-      .map(
-        (r, i) =>
-          `${i + 1}. **${r.title}** (${r.path}) [${r.confidence}]\n   ${r.excerpt}`
-      )
+      .map((r, i) => {
+        // Extract excerpt around first keyword match
+        const lower = r.content.toLowerCase();
+        const firstKw = keywords.find((kw) => lower.includes(kw)) || "";
+        const idx = lower.indexOf(firstKw);
+        const start = Math.max(0, idx - 100);
+        const end = Math.min(r.content.length, idx + firstKw.length + 100);
+        const excerpt =
+          (start > 0 ? "..." : "") +
+          r.content.slice(start, end).replace(/\n/g, " ") +
+          (end < r.content.length ? "..." : "");
+
+        const conf = r.frontmatter.confidence || "assumed";
+        return `${i + 1}. **${r.title}** (${r.path}) [${conf}]\n   ${excerpt}`;
+      })
       .join("\n\n");
 
     return {
@@ -361,7 +585,7 @@ server.registerTool(
       title: z.string().describe("Page title"),
       type: z
         .enum(VALID_TYPES)
-        .describe("Entry type: concept, entity, rule, role, decision, or glossary"),
+        .describe("Entry type: concept, entity, rule, role, decision, glossary, or source"),
       body: z.string().describe("Markdown content (no frontmatter)"),
       confidence: z
         .enum(VALID_CONFIDENCE)
@@ -374,9 +598,21 @@ server.registerTool(
         ),
       domain: z.string().optional().describe("Subdomain (e.g. billing, tenants)"),
       tags: z.array(z.string()).optional().describe("Optional tags"),
+      derived_entries: z
+        .array(z.string())
+        .optional()
+        .describe("Source pages only. Titles of entries derived from this source"),
+      source_url: z
+        .string()
+        .optional()
+        .describe("Source pages only. Original URL of the ingested document"),
+      source_file: z
+        .string()
+        .optional()
+        .describe("Source pages only. Original file path of the ingested document"),
     },
   },
-  async ({ title, type, body, confidence, sources, domain, tags }) => {
+  async ({ title, type, body, confidence, sources, domain, tags, derived_entries, source_url, source_file }) => {
     // Check if page already exists by title
     const existing = await findPageByTitle(title);
     const isUpdate = existing !== null;
@@ -405,6 +641,9 @@ server.registerTool(
       updated: today(),
       sources,
       tags,
+      derived_entries: type === "source" ? derived_entries : undefined,
+      source_url: type === "source" ? source_url : undefined,
+      source_file: type === "source" ? source_file : undefined,
     };
 
     const pageContent = buildPage(frontmatter, body);
@@ -446,6 +685,30 @@ server.registerTool(
       }
     }
 
+    // Backlink maintenance: update source pages' derived_entries
+    const sourceRefPattern = /^source:(.+)$/;
+    for (const src of sources) {
+      const match = src.match(sourceRefPattern);
+      if (!match) continue;
+
+      const sourceTitle = match[1];
+      const sourcePage = await findPageByTitle(sourceTitle);
+      if (!sourcePage) continue; // Source page doesn't exist yet, skip silently
+
+      const [sourceFilePath, sourceContent] = sourcePage;
+      const sourceFm = parseFrontmatter(sourceContent);
+      if (!sourceFm || sourceFm.type !== "source") continue;
+
+      const existing_derived = (sourceFm.derived_entries as string[]) || [];
+      if (existing_derived.includes(title)) continue; // Already tracked
+
+      sourceFm.derived_entries = [...existing_derived, title];
+      sourceFm.updated = today();
+      const sourceBody = extractBody(sourceContent);
+      const updatedSourceContent = buildPage(sourceFm, sourceBody);
+      await fs.writeFile(sourceFilePath, updatedSourceContent, "utf-8");
+    }
+
     // Append operation
     await appendOperation({
       op: isUpdate ? "update" : "write",
@@ -474,7 +737,7 @@ server.registerTool(
     description:
       "Browse lore entries filtered by type, domain, confidence, or tag. Returns title, type, domain, and confidence for each match.",
     inputSchema: {
-      type: z.string().optional().describe("Filter by type (concept, entity, rule, role, decision, glossary)"),
+      type: z.string().optional().describe("Filter by type (concept, entity, rule, role, decision, glossary, source)"),
       domain: z.string().optional().describe("Filter by domain"),
       confidence: z.string().optional().describe("Filter by confidence (verified, inferred, assumed)"),
       tag: z.string().optional().describe("Filter by tag"),
@@ -567,83 +830,128 @@ server.registerTool(
     },
   },
   async ({ question }) => {
-    // Step 1: Read the index
-    const indexPath = path.join(LORE_PATH, "index.md");
-    const indexContent = await readFile(indexPath);
-
-    if (!indexContent) {
+    // Step 1: Load all documents
+    const allFiles = await findMarkdownFiles(LORE_PATH);
+    if (allFiles.length === 0) {
       return {
         content: [
           {
             type: "text" as const,
-            text: "No lore index found. Run the install script to set up the lore directory, then /lore:bootstrap to seed initial entries.",
+            text: "No lore entries found. Run the install script to set up the lore directory, then /lore:bootstrap to seed initial entries.",
           },
         ],
         isError: true,
       };
     }
 
-    const keywords = question
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((w) => w.length > 2);
-
-    // Step 2: Score index entries by keyword overlap
-    const wikilinks = [...indexContent.matchAll(/\[\[([^\]]+)\]\]/g)].map(
-      (m) => m[1]
-    );
-
-    const scored = wikilinks.map((title) => {
-      const titleLower = title.toLowerCase();
-      const score = keywords.filter((kw) => titleLower.includes(kw)).length;
-      return { title, score };
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-    const relevant = scored.filter((s) => s.score > 0).slice(0, 5);
-
-    // Step 3: Full-text search for broader matches
-    const allFiles = await findMarkdownFiles(LORE_PATH);
-    const textMatches: {
+    const documents: Array<{
+      path: string;
       title: string;
-      filePath: string;
-      score: number;
-      confidence: string;
-    }[] = [];
+      content: string;
+      frontmatter: Frontmatter;
+    }> = [];
 
     for (const f of allFiles) {
       const content = await readFile(f);
       if (!content) continue;
       const fm = parseFrontmatter(content);
-      const title = (fm?.title as string) || path.basename(f, ".md");
+      if (!fm) continue;
+      documents.push({
+        path: path.relative(LORE_PATH, f),
+        title: (fm.title as string) || path.basename(f, ".md"),
+        content,
+        frontmatter: fm,
+      });
+    }
 
-      // Skip if already in relevant from index
-      if (relevant.some((r) => r.title === title)) continue;
+    // Step 2: BM25 scoring
+    let scored = computeBM25Scores(question, documents);
 
-      // Count keyword hits in content
-      const searchText = (title + " " + content).toLowerCase();
-      let matchCount = 0;
-      for (const kw of keywords) {
-        if (searchText.includes(kw)) matchCount++;
+    // Step 3: Inbound link boost
+    const inboundCounts = buildInboundCounts(
+      documents.map((d) => ({ title: d.title, content: d.content }))
+    );
+    scored = applyLinkBoost(scored, inboundCounts);
+
+    // Step 4: Confidence bonus (additive)
+    const results = scored.map((r) => ({
+      ...r,
+      score: r.score + confidenceBonus(r.frontmatter.confidence),
+    }));
+
+    // Sort by score desc
+    results.sort((a, b) => b.score - a.score);
+
+    // Step 5: 1-hop expansion when results are thin
+    const maxScore = results.length > 0 ? results[0].score : 0;
+    const qualifyingResults = maxScore > 0
+      ? results.filter((r) => r.score / maxScore >= 0.3)
+      : [];
+
+    let finalResults = [...results];
+
+    if (qualifyingResults.length < 3 && qualifyingResults.length > 0) {
+      // Build lookup maps for wikilink resolution
+      const { titleMap, slugMap } = buildLookupMaps(
+        documents.map((d) => ({ path: d.path, title: d.title }))
+      );
+
+      // Extract wikilinks from qualifying results
+      const existingPaths = new Set(results.map((r) => r.path));
+      const expansionCandidates: Array<{ path: string; parentScore: number }> = [];
+
+      for (const result of qualifyingResults) {
+        const body = extractBody(result.content);
+        const links = extractWikilinks(body);
+
+        for (const linkText of links) {
+          let resolved = resolveWikilink(linkText, titleMap, slugMap);
+          if (!resolved) continue;
+
+          // Handle direct path resolution
+          if (resolved.startsWith("__direct__")) {
+            const directPath = resolved.slice("__direct__".length);
+            if (await fileExists(directPath)) {
+              resolved = path.relative(LORE_PATH, directPath);
+            } else {
+              continue;
+            }
+          }
+
+          if (!existingPaths.has(resolved)) {
+            expansionCandidates.push({ path: resolved, parentScore: result.score });
+          }
+        }
       }
 
-      if (matchCount > 0) {
-        const confidence = (fm?.confidence as string) || "assumed";
-        const score = matchCount / keywords.length + confidenceBonus(confidence);
-        textMatches.push({ title, filePath: f, score, confidence });
+      // Deduplicate and rank by parent score
+      const seen = new Set<string>();
+      const uniqueCandidates = expansionCandidates.filter((c) => {
+        if (seen.has(c.path)) return false;
+        seen.add(c.path);
+        return true;
+      });
+      uniqueCandidates.sort((a, b) => b.parentScore - a.parentScore);
+
+      // Read and append up to 3 expansion pages
+      let expansionCount = 0;
+      for (const candidate of uniqueCandidates) {
+        if (expansionCount >= 3) break;
+        const doc = documents.find((d) => d.path === candidate.path);
+        if (!doc) continue;
+
+        finalResults.push({
+          ...doc,
+          score: candidate.parentScore * 0.5,
+        });
+        expansionCount++;
       }
     }
 
-    textMatches.sort((a, b) => b.score - a.score);
-    const additionalPages = textMatches.slice(0, 3);
+    // Step 6: Collect top results for output
+    const topResults = finalResults.slice(0, 10);
 
-    // Step 4: Read and concatenate relevant pages
-    const pageTitles = [
-      ...relevant.map((r) => r.title),
-      ...additionalPages.map((r) => r.title),
-    ];
-
-    if (pageTitles.length === 0) {
+    if (topResults.length === 0) {
       return {
         content: [
           {
@@ -654,45 +962,33 @@ server.registerTool(
       };
     }
 
+    // Step 7: Read and concatenate page contents
     const pageContents: string[] = [];
     let totalLength = 0;
     const MAX_TOTAL = 20_000;
 
-    for (const title of pageTitles) {
-      let content: string | null = null;
-      let foundPath = "";
-
-      for (const f of allFiles) {
-        const c = await readFile(f);
-        if (!c) continue;
-        const fm = parseFrontmatter(c);
-        if (fm && typeof fm.title === "string" && fm.title === title) {
-          content = c;
-          foundPath = path.relative(LORE_PATH, f);
-          break;
+    for (const result of topResults) {
+      const content = result.content;
+      if (totalLength + content.length > MAX_TOTAL) {
+        const remaining = MAX_TOTAL - totalLength;
+        if (remaining > 500) {
+          pageContents.push(
+            `\n---\n## ${result.title} (${result.path}) [truncated]\n\n${content.slice(0, remaining)}...`
+          );
         }
+        break;
       }
-
-      if (content) {
-        if (totalLength + content.length > MAX_TOTAL) {
-          const remaining = MAX_TOTAL - totalLength;
-          if (remaining > 500) {
-            pageContents.push(
-              `\n---\n## ${title} (${foundPath}) [truncated]\n\n${content.slice(0, remaining)}...`
-            );
-          }
-          break;
-        }
-        pageContents.push(`\n---\n## ${title} (${foundPath})\n\n${content}`);
-        totalLength += content.length;
-      }
+      pageContents.push(
+        `\n---\n## ${result.title} (${result.path})\n\n${content}`
+      );
+      totalLength += content.length;
     }
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `Found ${pageTitles.length} relevant lore entry/entries for "${question}":\n${pageContents.join("\n")}`,
+          text: `Found ${topResults.length} relevant lore entry/entries for "${question}":\n${pageContents.join("\n")}`,
         },
       ],
     };
