@@ -16,4 +16,5 @@ Set up the lore plugin in the current project by running the install script.
    bash "${CLAUDE_SKILL_DIR}/install.sh"
    ```
 
-2. Report what was created and suggest running `/lore:bootstrap` next to seed initial knowledge.
+2. Report what was created.
+3. **Tell the user they must restart Claude Code** before doing anything else. The MCP server and agent rule won't be available until after a restart. After restarting, they should run `/lore:bootstrap` to seed initial knowledge.
