@@ -12,39 +12,19 @@ Agents check the lore before asking you domain questions. When they learn someth
 
 ## Install
 
-### 1. Register the plugin
+### 1. Install the plugin
 
-Add to your Claude Code settings (`~/.claude/settings.json`):
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "lore": {
-      "source": {
-        "source": "directory",
-        "path": "/path/to/this/lore/repo"
-      }
-    }
-  }
-}
 ```
-
-Then enable it:
-
-```json
-{
-  "enabledPlugins": {
-    "lore@lore": true
-  }
-}
+/plugin marketplace add leviosa-medical/lore
+/plugin install lore@lore
 ```
 
 ### 2. Set up a project
 
-From your target project's root:
+From your target project's root, run the install script (available on PATH after plugin install):
 
 ```bash
-bash /path/to/this/lore/repo/bin/install.sh
+install.sh
 ```
 
 This creates:
@@ -53,6 +33,7 @@ This creates:
 - `lore/config.yaml` — project-specific domains and routing guidance
 - `lore/operations.jsonl` — append-only operation log
 - `.claude/rules/lore.md` — agent integration rule
+- `.claude/settings.json` — marketplace and plugin config (so teammates get auto-prompted)
 
 ### 3. Seed initial knowledge
 
