@@ -7,7 +7,7 @@ set -euo pipefail
 # Usage: bash <path-to-lore-plugin>/bin/install.sh [project-root]
 #   project-root defaults to current working directory
 
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 PLUGIN_VERSION=$(grep '"version"' "$SCRIPT_DIR/.claude-plugin/plugin.json" | sed 's/.*: *"\(.*\)".*/\1/')
 
 PROJECT_ROOT="${1:-$(pwd)}"
@@ -90,7 +90,7 @@ node -e "
   const f = '$SETTINGS_FILE';
   const s = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
   s.extraKnownMarketplaces ??= {};
-  s.extraKnownMarketplaces.lore ??= { source: 'github', repo: 'leviosa-medical/lore' };
+  s.extraKnownMarketplaces.lore ??= { source: { source: 'github', repo: 'leviosa-medical/lore' } };
   s.enabledPlugins ??= {};
   s.enabledPlugins['lore@lore'] ??= true;
   fs.writeFileSync(f, JSON.stringify(s, null, 2) + '\n');
