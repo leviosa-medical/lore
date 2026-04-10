@@ -1,0 +1,19 @@
+{
+  "name": "lore",
+  "version": "0.1.0",
+  "description": "Domain knowledge plugin for Claude Code — persistent, confidence-tracked lore per project",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc && esbuild dist/server.js --bundle --platform=node --format=esm --outfile=dist/server.bundle.js && mv dist/server.bundle.js dist/server.js",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.0"
+  }
+}

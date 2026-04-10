@@ -1,0 +1,16 @@
+{
+  "name": "lore",
+  "owner": {
+    "name": "Bragi Bergþórsson"
+  },
+  "metadata": {
+    "description": "Domain knowledge plugin for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "lore",
+      "source": "./",
+      "description": "Persistent, confidence-tracked domain knowledge per project"
+    }
+  ]
+}

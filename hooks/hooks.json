@@ -1,0 +1,16 @@
+{
+  "description": "Lore retrospective hook — prompts for domain knowledge corrections after task completion",
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "Task (completed|done|finished)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Were any domain assumptions wrong in this session? If yes, I\\'ll update the lore.'"
+          }
+        ]
+      }
+    ]
+  }
+}
