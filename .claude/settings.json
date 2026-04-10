@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty'); if [[ \"$FILE\" == */.claude-plugin/plugin.json ]]; then echo 'The plugin version in plugin.json was just updated. You MUST update CHANGELOG.md before proceeding.\n\nProcess:\n1. Read CHANGELOG.md to understand the existing format and style\n2. Run git diff to see ALL changes since the last version tag — analyze the actual diffs, not just commit messages\n3. Run git log --oneline for the commit range to see the full scope\n4. Write user-facing descriptions grouped under Added/Changed/Removed/Fixed categories (Keep a Changelog format)\n5. Move any items currently under [Unreleased] into the new version entry\n6. Add today date in YYYY-MM-DD format\n\nQuality bar: entries should describe WHAT changed and WHY it matters to users, not parrot commit messages. Group related changes. Include skill/tool names in bold when relevant.' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
