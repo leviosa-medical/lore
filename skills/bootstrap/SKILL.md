@@ -35,7 +35,8 @@ Seed the lore knowledge base from existing project artifacts. This is a one-time
    - Ask: confirm, correct, or skip each group
 
 5. **Write confirmed entries.** For each confirmed entry:
-   - Use `lore_write` with `confidence: verified` (user confirmed)
+   - **ALWAYS use the `lore_write` MCP tool** — never use Write or Edit to create files in `lore/` directly. `lore_write` maintains the operations log and index; bypassing it leaves the audit trail empty.
+   - Set `confidence: verified` for user-confirmed entries
    - Set source to `"bootstrap:CLAUDE.md"` or appropriate source path
    - For entries the user didn't review, use `confidence: inferred`
 
