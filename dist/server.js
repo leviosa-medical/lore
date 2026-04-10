@@ -30116,7 +30116,7 @@ var StdioServerTransport = class {
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 var LORE_PATH = process.env.LORE_PATH || process.argv[2] || path.resolve(process.cwd(), "lore");
-var PLUGIN_VERSION = "0.1.0";
+var PLUGIN_VERSION = "0.4.0";
 var VALID_TYPES = [
   "concept",
   "entity",
@@ -30179,9 +30179,10 @@ function parseFrontmatter(content) {
     if (!kv)
       continue;
     const [, key, rawValue] = kv;
-    const arrayMatch = rawValue.match(/^\[(.+)\]$/);
+    const arrayMatch = rawValue.match(/^\[(.*)\]$/);
     if (arrayMatch) {
-      fields[key] = arrayMatch[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""));
+      const inner = arrayMatch[1].trim();
+      fields[key] = inner === "" ? [] : inner.split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""));
     } else {
       fields[key] = rawValue.replace(/^["']|["']$/g, "");
     }
@@ -30194,13 +30195,14 @@ function extractBody(content) {
 }
 function buildPage(frontmatter, body) {
   const lines = ["---"];
+  const sanitize = (v) => v.replace(/[\n\r]/g, " ").replace(/"/g, '\\"');
   const writeField = (key, value) => {
     if (value === void 0)
       return;
     if (Array.isArray(value)) {
-      lines.push(`${key}: [${value.map((v) => `"${v}"`).join(", ")}]`);
+      lines.push(`${key}: [${value.map((v) => `"${sanitize(v)}"`).join(", ")}]`);
     } else {
-      lines.push(`${key}: ${value}`);
+      lines.push(`${key}: ${sanitize(value)}`);
     }
   };
   writeField("title", frontmatter.title);
@@ -30261,19 +30263,21 @@ function computeBM25Scores(query, documents, k1 = 1.2, b = 0.75) {
     return [];
   const N = documents.length;
   const docTokens = [];
+  const docTokenSets = [];
   let totalLength = 0;
   for (const doc of documents) {
     const searchText = doc.title + " " + extractBody(doc.content);
     const tokens = tokenize(searchText);
     docTokens.push(tokens);
+    docTokenSets.push(new Set(tokens));
     totalLength += tokens.length;
   }
   const avgdl = totalLength / N;
   const df = /* @__PURE__ */ new Map();
   for (const term of queryTerms) {
     let count = 0;
-    for (const tokens of docTokens) {
-      if (tokens.includes(term))
+    for (const tokenSet of docTokenSets) {
+      if (tokenSet.has(term))
         count++;
     }
     df.set(term, count);
@@ -30312,7 +30316,12 @@ function extractWikilinks(content) {
   const matches = [...stripped.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
   return [...new Set(matches)];
 }
-function resolveWikilink(linkText, titleMap, slugMap) {
+function isConfinedToLore(resolvedPath) {
+  const normalized = path.resolve(resolvedPath);
+  const loreRoot = path.resolve(LORE_PATH);
+  return normalized === loreRoot || normalized.startsWith(loreRoot + path.sep);
+}
+async function resolveWikilink(linkText, titleMap, slugMap) {
   const titlePath = titleMap.get(linkText.toLowerCase());
   if (titlePath)
     return titlePath;
@@ -30322,7 +30331,11 @@ function resolveWikilink(linkText, titleMap, slugMap) {
     return slugPath;
   if (linkText.includes("/") || linkText.endsWith(".md")) {
     const directPath = path.join(LORE_PATH, linkText);
-    return `__direct__${directPath}`;
+    if (!isConfinedToLore(directPath))
+      return null;
+    if (await fileExists(directPath)) {
+      return path.relative(LORE_PATH, directPath);
+    }
   }
   return null;
 }
@@ -30365,7 +30378,7 @@ function applyLinkBoost(results, inboundCounts, weight = 0.2) {
 }
 var server = new McpServer({
   name: "lore",
-  version: "0.1.0"
+  version: "0.4.0"
 });
 server.registerTool("lore_read", {
   description: "Read a lore page by title or relative path (e.g. 'Lease Termination Rules' or 'rules/lease-termination.md'). Returns full page content including frontmatter.",
@@ -30389,15 +30402,10 @@ server.registerTool("lore_read", {
     contentCache.set(relPath, content2);
   }
   const { titleMap, slugMap } = buildLookupMaps(documents);
-  let resolved = resolveWikilink(page, titleMap, slugMap);
+  const resolved = await resolveWikilink(page, titleMap, slugMap);
   let filePath = null;
   let content = null;
-  if (resolved && resolved.startsWith("__direct__")) {
-    const directPath = resolved.slice("__direct__".length);
-    content = await readFile2(directPath);
-    if (content)
-      filePath = directPath;
-  } else if (resolved) {
+  if (resolved) {
     content = contentCache.get(resolved) || null;
     if (content)
       filePath = path.join(LORE_PATH, resolved);
@@ -30406,9 +30414,11 @@ server.registerTool("lore_read", {
     let tryPath = path.join(LORE_PATH, page);
     if (!page.endsWith(".md"))
       tryPath += ".md";
-    content = await readFile2(tryPath);
-    if (content)
-      filePath = tryPath;
+    if (isConfinedToLore(tryPath)) {
+      content = await readFile2(tryPath);
+      if (content)
+        filePath = tryPath;
+    }
   }
   if (!content || !filePath) {
     return {
@@ -30720,7 +30730,7 @@ server.registerTool("lore_query", {
   results.sort((a, b) => b.score - a.score);
   const maxScore = results.length > 0 ? results[0].score : 0;
   const qualifyingResults = maxScore > 0 ? results.filter((r) => r.score / maxScore >= 0.3) : [];
-  let finalResults = [...results];
+  let finalResults = [];
   if (qualifyingResults.length < 3 && qualifyingResults.length > 0) {
     const { titleMap, slugMap } = buildLookupMaps(documents.map((d) => ({ path: d.path, title: d.title })));
     const existingPaths = new Set(results.map((r) => r.path));
@@ -30729,17 +30739,9 @@ server.registerTool("lore_query", {
       const body = extractBody(result.content);
       const links = extractWikilinks(body);
       for (const linkText of links) {
-        let resolved = resolveWikilink(linkText, titleMap, slugMap);
+        const resolved = await resolveWikilink(linkText, titleMap, slugMap);
         if (!resolved)
           continue;
-        if (resolved.startsWith("__direct__")) {
-          const directPath = resolved.slice("__direct__".length);
-          if (await fileExists(directPath)) {
-            resolved = path.relative(LORE_PATH, directPath);
-          } else {
-            continue;
-          }
-        }
         if (!existingPaths.has(resolved)) {
           expansionCandidates.push({ path: resolved, parentScore: result.score });
         }
@@ -30766,6 +30768,14 @@ server.registerTool("lore_query", {
       });
       expansionCount++;
     }
+  }
+  if (finalResults.length === 0) {
+    finalResults = [...results];
+  } else {
+    const expansionPaths = new Set(finalResults.map((r) => r.path));
+    const qualifyingPaths = new Set(qualifyingResults.map((r) => r.path));
+    const remaining = results.filter((r) => !qualifyingPaths.has(r.path) && !expansionPaths.has(r.path));
+    finalResults = [...qualifyingResults, ...finalResults, ...remaining];
   }
   const topResults = finalResults.slice(0, 10);
   if (topResults.length === 0) {

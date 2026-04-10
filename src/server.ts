@@ -10,7 +10,7 @@ const LORE_PATH =
   process.argv[2] ||
   path.resolve(process.cwd(), "lore");
 
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.4.0";
 
 const VALID_TYPES = [
   "concept",
@@ -98,11 +98,12 @@ function parseFrontmatter(content: string): Frontmatter | null {
     const kv = line.match(/^(\w[\w-]*):\s*(.*)/);
     if (!kv) continue;
     const [, key, rawValue] = kv;
-    const arrayMatch = rawValue.match(/^\[(.+)\]$/);
+    const arrayMatch = rawValue.match(/^\[(.*)\]$/);
     if (arrayMatch) {
-      fields[key] = arrayMatch[1]
-        .split(",")
-        .map((s) => s.trim().replace(/^["']|["']$/g, ""));
+      const inner = arrayMatch[1].trim();
+      fields[key] = inner === ""
+        ? []
+        : inner.split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""));
     } else {
       fields[key] = rawValue.replace(/^["']|["']$/g, "");
     }
@@ -120,12 +121,13 @@ function buildPage(
   body: string
 ): string {
   const lines: string[] = ["---"];
+  const sanitize = (v: string) => v.replace(/[\n\r]/g, " ").replace(/"/g, '\\"');
   const writeField = (key: string, value: string | string[] | undefined) => {
     if (value === undefined) return;
     if (Array.isArray(value)) {
-      lines.push(`${key}: [${value.map((v) => `"${v}"`).join(", ")}]`);
+      lines.push(`${key}: [${value.map((v) => `"${sanitize(v)}"`).join(", ")}]`);
     } else {
-      lines.push(`${key}: ${value}`);
+      lines.push(`${key}: ${sanitize(value)}`);
     }
   };
 
@@ -228,11 +230,13 @@ function computeBM25Scores(
 
   // Tokenize all documents and compute corpus stats
   const docTokens: string[][] = [];
+  const docTokenSets: Set<string>[] = [];
   let totalLength = 0;
   for (const doc of documents) {
     const searchText = doc.title + " " + extractBody(doc.content);
     const tokens = tokenize(searchText);
     docTokens.push(tokens);
+    docTokenSets.push(new Set(tokens));
     totalLength += tokens.length;
   }
   const avgdl = totalLength / N;
@@ -241,8 +245,8 @@ function computeBM25Scores(
   const df = new Map<string, number>();
   for (const term of queryTerms) {
     let count = 0;
-    for (const tokens of docTokens) {
-      if (tokens.includes(term)) count++;
+    for (const tokenSet of docTokenSets) {
+      if (tokenSet.has(term)) count++;
     }
     df.set(term, count);
   }
@@ -295,12 +299,19 @@ function extractWikilinks(content: string): string[] {
   return [...new Set(matches)];
 }
 
-/** Resolve a wikilink text to a file path. Title match → slug match → direct path. */
-function resolveWikilink(
+/** Check that a resolved path is confined within LORE_PATH. */
+function isConfinedToLore(resolvedPath: string): boolean {
+  const normalized = path.resolve(resolvedPath);
+  const loreRoot = path.resolve(LORE_PATH);
+  return normalized === loreRoot || normalized.startsWith(loreRoot + path.sep);
+}
+
+/** Resolve a wikilink text to a relative file path. Title match → slug match → direct path. */
+async function resolveWikilink(
   linkText: string,
   titleMap: Map<string, string>,
   slugMap: Map<string, string>
-): string | null {
+): Promise<string | null> {
   // 1. Title match (case-insensitive)
   const titlePath = titleMap.get(linkText.toLowerCase());
   if (titlePath) return titlePath;
@@ -313,8 +324,10 @@ function resolveWikilink(
   // 3. Direct path match (contains / or ends with .md)
   if (linkText.includes("/") || linkText.endsWith(".md")) {
     const directPath = path.join(LORE_PATH, linkText);
-    // We can't do async here, so we'll handle this in the caller
-    return `__direct__${directPath}`;
+    if (!isConfinedToLore(directPath)) return null;
+    if (await fileExists(directPath)) {
+      return path.relative(LORE_PATH, directPath);
+    }
   }
 
   return null;
@@ -382,7 +395,7 @@ function applyLinkBoost(
 
 const server = new McpServer({
   name: "lore",
-  version: "0.1.0",
+  version: "0.4.0",
 });
 
 /**
@@ -418,17 +431,11 @@ server.registerTool(
     const { titleMap, slugMap } = buildLookupMaps(documents);
 
     // Resolution chain: title → slug → direct path
-    let resolved = resolveWikilink(page, titleMap, slugMap);
+    const resolved = await resolveWikilink(page, titleMap, slugMap);
     let filePath: string | null = null;
     let content: string | null = null;
 
-    if (resolved && resolved.startsWith("__direct__")) {
-      // Direct path resolution
-      const directPath = resolved.slice("__direct__".length);
-      content = await readFile(directPath);
-      if (content) filePath = directPath;
-    } else if (resolved) {
-      // Title or slug match — resolved is a relative path
+    if (resolved) {
       content = contentCache.get(resolved) || null;
       if (content) filePath = path.join(LORE_PATH, resolved);
     }
@@ -437,8 +444,10 @@ server.registerTool(
     if (!content) {
       let tryPath = path.join(LORE_PATH, page);
       if (!page.endsWith(".md")) tryPath += ".md";
-      content = await readFile(tryPath);
-      if (content) filePath = tryPath;
+      if (isConfinedToLore(tryPath)) {
+        content = await readFile(tryPath);
+        if (content) filePath = tryPath;
+      }
     }
 
     if (!content || !filePath) {
@@ -888,7 +897,7 @@ server.registerTool(
       ? results.filter((r) => r.score / maxScore >= 0.3)
       : [];
 
-    let finalResults = [...results];
+    let finalResults: typeof results = [];
 
     if (qualifyingResults.length < 3 && qualifyingResults.length > 0) {
       // Build lookup maps for wikilink resolution
@@ -905,18 +914,8 @@ server.registerTool(
         const links = extractWikilinks(body);
 
         for (const linkText of links) {
-          let resolved = resolveWikilink(linkText, titleMap, slugMap);
+          const resolved = await resolveWikilink(linkText, titleMap, slugMap);
           if (!resolved) continue;
-
-          // Handle direct path resolution
-          if (resolved.startsWith("__direct__")) {
-            const directPath = resolved.slice("__direct__".length);
-            if (await fileExists(directPath)) {
-              resolved = path.relative(LORE_PATH, directPath);
-            } else {
-              continue;
-            }
-          }
 
           if (!existingPaths.has(resolved)) {
             expansionCandidates.push({ path: resolved, parentScore: result.score });
@@ -946,6 +945,18 @@ server.registerTool(
         });
         expansionCount++;
       }
+    }
+
+    // Compose final list: qualifying + expansion + remaining BM25
+    if (finalResults.length === 0) {
+      finalResults = [...results];
+    } else {
+      const expansionPaths = new Set(finalResults.map((r) => r.path));
+      const qualifyingPaths = new Set(qualifyingResults.map((r) => r.path));
+      const remaining = results.filter(
+        (r) => !qualifyingPaths.has(r.path) && !expansionPaths.has(r.path)
+      );
+      finalResults = [...qualifyingResults, ...finalResults, ...remaining];
     }
 
     // Step 6: Collect top results for output
