@@ -50,6 +50,7 @@ Seed the lore knowledge base by decomposing existing project artifacts into atom
 4. **Decompose into atomic entries.** Read each source page and extract individual pieces of knowledge. Each becomes its own page with one concept per page (multiple related claims allowed). For each entry:
    - Classify type: `concept`, `entity`, `rule`, `role`, `decision`, or `glossary`
    - Write a focused body covering exactly one concept
+   - Generate 5-10 `search_keys` for each entry: synonyms for key domain terms, alternative phrasings of the concept, and 2-3 questions the entry would answer. Pass these via the `search_keys` parameter in `lore_write`
    - Add `[[wikilinks]]` to related entries (both existing and ones you're about to create)
    - Set `sources` array to include `"source:Source - <Document Title>"` to trigger backlink maintenance
    - Use your judgment for domain groupings (e.g., "billing", "tenants", "scheduling")

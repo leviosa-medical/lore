@@ -6,6 +6,7 @@ import {
   confidenceBonus,
   applyLinkBoost,
   extractWikilinks,
+  decomposeQuery,
 } from "../../dist/scoring.js";
 
 import { recallAtK, ndcgAtK } from "../scoring/metrics.js";
@@ -356,6 +357,161 @@ function testWikilinkExtraction() {
 }
 
 /**
+ * Decompose query: assert that compound queries are split correctly and simple
+ * queries pass through unchanged.
+ */
+function testDecomposeQuery() {
+  const id = "unit-decompose-query";
+  const ability = "decompose_query";
+  try {
+    const checks = [];
+
+    // Simple query — no decomposition
+    const simple = decomposeQuery("billing rules");
+    checks.push({
+      label: '"billing rules" returns ["billing rules"]',
+      ok: simple.length === 1 && simple[0] === "billing rules",
+      got: JSON.stringify(simple),
+    });
+
+    // Compound with "and what"
+    const compound = decomposeQuery(
+      "what role handles terminations and what is the notice period"
+    );
+    checks.push({
+      label: "compound 'and what' query returns 2 parts",
+      ok: compound.length === 2,
+      got: JSON.stringify(compound),
+    });
+
+    // Semicolons
+    const semicolons = decomposeQuery(
+      "explain the billing rules; what are the tenant policies"
+    );
+    checks.push({
+      label: "semicolon-separated query returns 2 parts",
+      ok: semicolons.length === 2,
+      got: JSON.stringify(semicolons),
+    });
+
+    // Question marks
+    const questions = decomposeQuery(
+      "what is BM25 scoring? how does retrieval work"
+    );
+    checks.push({
+      label: "question-mark-separated query returns 2 parts",
+      ok: questions.length === 2,
+      got: JSON.stringify(questions),
+    });
+
+    // Sub-part under 15 chars gets filtered
+    const shortPart = decomposeQuery("hello and what is x");
+    checks.push({
+      label: "sub-part under 15 chars gets filtered, returns original",
+      ok:
+        shortPart.length === 1 &&
+        shortPart[0] === "hello and what is x",
+      got: JSON.stringify(shortPart),
+    });
+
+    // Casual "and" without question word — no split
+    const casual = decomposeQuery("roles and responsibilities in billing");
+    checks.push({
+      label: 'casual "and" without question word returns original',
+      ok:
+        casual.length === 1 &&
+        casual[0] === "roles and responsibilities in billing",
+      got: JSON.stringify(casual),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed
+        .map((c) => `${c.label} (got ${c.got})`)
+        .join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} decomposeQuery assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
+ * Metadata weighting: assert that metadata matches score higher than body-only
+ * matches due to METADATA_WEIGHT (2.0x) boost.
+ */
+function testMetadataWeighting() {
+  const id = "unit-metadata-weighting";
+  const ability = "metadata_weighting";
+  try {
+    const documents = [
+      {
+        path: "billing/concepts.md",
+        title: "Billing Concepts",
+        content:
+          "---\ntitle: Billing Concepts\ndomain: billing\ntype: concept\n---\n\nThis document covers general accounting concepts and payment workflows.",
+        frontmatter: {
+          title: "Billing Concepts",
+          domain: "billing",
+          type: "concept",
+        },
+      },
+      {
+        path: "tenants/overview.md",
+        title: "Tenant Overview",
+        content:
+          "---\ntitle: Tenant Overview\ndomain: tenants\ntype: entity\n---\n\nThis document covers tenant management. The billing process is handled elsewhere.",
+        frontmatter: {
+          title: "Tenant Overview",
+          domain: "tenants",
+          type: "entity",
+        },
+      },
+    ];
+
+    const query = "billing";
+    const results = computeBM25Scores(query, documents);
+
+    const docA = results.find((r) => r.title === "Billing Concepts");
+    const docB = results.find((r) => r.title === "Tenant Overview");
+
+    if (!docA || !docB) {
+      return {
+        id,
+        ability,
+        passed: false,
+        details: `Expected both docs to have scores, got: ${JSON.stringify(results.map((r) => r.title))}`,
+      };
+    }
+
+    if (!(docA.score > docB.score)) {
+      return {
+        id,
+        ability,
+        passed: false,
+        details: `Expected metadata-match doc (A=${docA.score.toFixed(4)}) to score higher than body-only doc (B=${docB.score.toFixed(4)})`,
+      };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `Metadata match A=${docA.score.toFixed(4)} > body-only B=${docB.score.toFixed(4)}`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
  * Run all unit tests and return results array.
  * Each result: { id, ability, passed, details }
  */
@@ -366,6 +522,8 @@ export async function runUnitLayer() {
     testLinkBoost(),
     testMetrics(),
     testWikilinkExtraction(),
+    testDecomposeQuery(),
+    testMetadataWeighting(),
   ];
   return results;
 }
