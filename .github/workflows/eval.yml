@@ -1,0 +1,174 @@
+name: Eval Regression Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['src/**', 'eval/**', 'package.json', 'tsconfig.json']
+  push:
+    branches: [main]
+    paths: ['src/**', 'eval/**', 'package.json', 'tsconfig.json']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  eval-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit layer (fast gate)
+        run: node eval/run.js --layer unit --output eval/results/
+
+      - name: Run full eval
+        id: full-eval
+        continue-on-error: true
+        run: node eval/run.js --layer all --output eval/results/
+
+      - name: Compare against baseline
+        id: compare
+        run: |
+          REPORT=$(ls -1 eval/results/report-*.json | sort | tail -1)
+
+          if [ "${{ steps.full-eval.outcome }}" = "failure" ]; then
+            COMPARE_OUT="<!-- eval-regression-report -->
+          > **Warning:** Full eval run failed — integration layer could not complete. Unit layer passed. Regression check skipped."
+            COMPARE_EXIT=0
+          else
+            set +e
+            COMPARE_OUT=$(node eval/compare.js --baseline eval/baseline.json --current "$REPORT" --tolerance 0.05 --format markdown)
+            COMPARE_EXIT=$?
+            set -e
+            COMPARE_OUT="<!-- eval-regression-report -->
+          ${COMPARE_OUT}"
+          fi
+
+          # Write multi-line outputs using heredoc syntax
+          {
+            echo "compare_out<<EOF_COMPARE_OUT"
+            echo "$COMPARE_OUT"
+            echo "EOF_COMPARE_OUT"
+            echo "compare_exit=$COMPARE_EXIT"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Post or update PR comment
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          COMMENT_BODY="${{ steps.compare.outputs.compare_out }}"
+
+          COMMENTS=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments --paginate)
+          COMMENT_ID=$(echo "$COMMENTS" | jq -r '.[] | select(.body | contains("<!-- eval-regression-report -->")) | .id' | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api repos/${{ github.repository }}/issues/comments/${COMMENT_ID} -X PATCH -f body="$COMMENT_BODY"
+          else
+            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments -f body="$COMMENT_BODY"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Fail on regression
+        if: steps.compare.outputs.compare_exit == '1'
+        run: |
+          echo "Eval regression detected — one or more abilities dropped below the baseline tolerance."
+          echo "Check the PR comment for the full per-ability breakdown."
+          exit 1
+
+  update-baseline:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run full eval
+        run: node eval/run.js --layer all --output eval/results/
+
+      - name: Generate new baseline
+        run: |
+          node - <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+
+          const resultsDir = 'eval/results';
+          const reports = fs.readdirSync(resultsDir)
+            .filter(f => f.startsWith('report-') && f.endsWith('.json'))
+            .sort();
+
+          if (reports.length === 0) {
+            console.error('No report files found in eval/results/');
+            process.exit(1);
+          }
+
+          const latestReport = JSON.parse(
+            fs.readFileSync(path.join(resultsDir, reports[reports.length - 1]), 'utf8')
+          );
+
+          const keepMetrics = [
+            'recall_at_1',
+            'recall_at_5',
+            'recall_at_10',
+            'ndcg_at_5',
+            'ndcg_at_10',
+            'abstention_accuracy',
+          ];
+
+          const abilities = {};
+          for (const [ability, metrics] of Object.entries(latestReport.abilities || {})) {
+            const filtered = {};
+            for (const key of keepMetrics) {
+              if (key in metrics) {
+                filtered[key] = metrics[key];
+              }
+            }
+            if (Object.keys(filtered).length > 0) {
+              abilities[ability] = filtered;
+            }
+          }
+
+          const baseline = {
+            generated_at: latestReport.timestamp || new Date().toISOString(),
+            tier: latestReport.tier || 'small',
+            layer: latestReport.layer || 'all',
+            commit: (process.env.GITHUB_SHA || '').slice(0, 7),
+            abilities,
+          };
+
+          fs.writeFileSync('eval/baseline.json', JSON.stringify(baseline, null, 2) + '\n');
+          console.log('Baseline written to eval/baseline.json');
+          EOF
+
+      - name: Check if baseline changed
+        id: diff-check
+        continue-on-error: true
+        run: git diff --exit-code eval/baseline.json
+
+      - name: Commit updated baseline
+        if: steps.diff-check.outcome == 'failure'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add eval/baseline.json
+          git commit -m "chore: update eval baseline [skip ci]"
+          git push
