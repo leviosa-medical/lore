@@ -25,3 +25,21 @@ A self-contained retrieval quality benchmark lives in `eval/`. Run with `node ev
 - `node eval/run.js --threshold 0.8` — fail if Recall@5 drops below 0.8
 
 **When to run:** after changing scoring parameters (k1, b, link boost weight, confidence bonuses, expansion logic) in `src/scoring.ts` or `src/server.ts`. The per-ability breakdown pinpoints which retrieval capability regressed.
+
+## CI Regression Detection
+
+A GitHub Actions workflow (`.github/workflows/eval.yml`) automatically detects retrieval quality regressions on PRs targeting main.
+
+**How it works:**
+- PRs: runs the eval suite, compares results against `eval/baseline.json`, posts a delta table comment on the PR. Fails the check if any ability regresses beyond 0.05 tolerance.
+- Merges to main: re-runs eval and auto-commits an updated baseline.
+
+**Local comparison:**
+- `node eval/compare.js --baseline eval/baseline.json --current eval/results/<report>.json` — compare any report against the baseline
+- `node eval/compare.js --baseline eval/baseline.json --current <report> --format json` — machine-readable output
+- `node eval/compare.js --baseline eval/baseline.json --current <report> --tolerance 0.10` — custom tolerance
+
+**Key files:**
+- `eval/compare.js` — comparison script (exit 0 = pass, exit 1 = regression)
+- `eval/baseline.json` — committed baseline scores from main
+- `.github/workflows/eval.yml` — CI workflow

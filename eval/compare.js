@@ -13,7 +13,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -245,7 +245,11 @@ function buildComparison(baselineReport, currentReport, tolerance) {
 function getBaselineCommit(baselinePath) {
   try {
     const dir = path.dirname(path.resolve(baselinePath));
-    const hash = execSync(`git -C "${dir}" log -1 --pretty=format:%h -- "${path.resolve(baselinePath)}"`, {
+    const hash = execFileSync("git", [
+      "-C", dir,
+      "log", "-1", "--pretty=format:%h",
+      "--", path.resolve(baselinePath),
+    ], {
       stdio: ["ignore", "pipe", "ignore"],
     }).toString().trim();
     return hash || null;
@@ -284,24 +288,19 @@ function statusEmoji(status) {
     case "improved":  return ":arrow_up: improved";
     case "steady":    return ":white_check_mark: steady";
     case "new":       return ":new: new";
-    case "removed":   return ":wastebasket: removed";
+    case "removed":   return ":warning: removed";
     default:          return status;
   }
 }
 
-/** The column header label for the primary metric, per ability */
-function primaryColumnLabel(ability) {
-  return ability === "abstention" ? "Accuracy" : "Recall@5";
-}
-
 function metricDisplayName(metric) {
   const names = {
-    recall_at_1:        "recall_at_1",
-    recall_at_5:        "recall_at_5",
-    recall_at_10:       "recall_at_10",
-    ndcg_at_5:          "ndcg_at_5",
-    ndcg_at_10:         "ndcg_at_10",
-    abstention_accuracy:"abstention_accuracy",
+    recall_at_1:         "Recall@1",
+    recall_at_5:         "Recall@5",
+    recall_at_10:        "Recall@10",
+    ndcg_at_5:           "NDCG@5",
+    ndcg_at_10:          "NDCG@10",
+    abstention_accuracy: "Accuracy",
   };
   return names[metric] || metric;
 }

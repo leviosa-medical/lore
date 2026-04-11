@@ -6,16 +6,14 @@ on:
     paths: ['src/**', 'eval/**', 'package.json', 'tsconfig.json']
   push:
     branches: [main]
-    paths: ['src/**', 'eval/**', 'package.json', 'tsconfig.json']
-
-permissions:
-  contents: write
-  pull-requests: write
+    paths: ['src/**', 'eval/**', 'package.json', 'tsconfig.json', '!eval/baseline.json']
 
 jobs:
   eval-check:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -41,40 +39,32 @@ jobs:
           REPORT=$(ls -1 eval/results/report-*.json | sort | tail -1)
 
           if [ "${{ steps.full-eval.outcome }}" = "failure" ]; then
-            COMPARE_OUT="<!-- eval-regression-report -->
-          > **Warning:** Full eval run failed — integration layer could not complete. Unit layer passed. Regression check skipped."
-            COMPARE_EXIT=0
+            cat > /tmp/eval-comment.md <<'WARN'
+          <!-- eval-regression-report -->
+          ## Eval Regression Report
+
+          > :warning: **Integration layer failed** — only unit tests ran. Retrieval metrics unavailable for this push.
+          WARN
+            echo "compare_exit=0" >> "$GITHUB_OUTPUT"
           else
             set +e
-            COMPARE_OUT=$(node eval/compare.js --baseline eval/baseline.json --current "$REPORT" --tolerance 0.05 --format markdown)
+            node eval/compare.js --baseline eval/baseline.json --current "$REPORT" --tolerance 0.05 --format markdown > /tmp/eval-comment.md
             COMPARE_EXIT=$?
             set -e
-            COMPARE_OUT="<!-- eval-regression-report -->
-          ${COMPARE_OUT}"
+            echo "compare_exit=$COMPARE_EXIT" >> "$GITHUB_OUTPUT"
           fi
-
-          # Write multi-line outputs using heredoc syntax
-          {
-            echo "compare_out<<EOF_COMPARE_OUT"
-            echo "$COMPARE_OUT"
-            echo "EOF_COMPARE_OUT"
-            echo "compare_exit=$COMPARE_EXIT"
-          } >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Post or update PR comment
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          COMMENT_BODY="${{ steps.compare.outputs.compare_out }}"
 
           COMMENTS=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments --paginate)
           COMMENT_ID=$(echo "$COMMENTS" | jq -r '.[] | select(.body | contains("<!-- eval-regression-report -->")) | .id' | head -1)
 
           if [ -n "$COMMENT_ID" ]; then
-            gh api repos/${{ github.repository }}/issues/comments/${COMMENT_ID} -X PATCH -f body="$COMMENT_BODY"
+            gh api repos/${{ github.repository }}/issues/comments/${COMMENT_ID} -X PATCH -F body=@/tmp/eval-comment.md
           else
-            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments -f body="$COMMENT_BODY"
+            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments -F body=@/tmp/eval-comment.md
           fi
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,6 +79,8 @@ jobs:
   update-baseline:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
