@@ -30162,6 +30162,7 @@ function buildPage(frontmatter, body) {
   writeField("sources", frontmatter.sources);
   writeField("confirmed_by", frontmatter.confirmed_by);
   writeField("tags", frontmatter.tags);
+  writeField("search_keys", frontmatter.search_keys);
   if (frontmatter.type === "source") {
     writeField("derived_entries", frontmatter.derived_entries);
     writeField("source_url", frontmatter.source_url);
@@ -30190,29 +30191,49 @@ function recencyBonus(updated) {
   if (isNaN(ts))
     return 0;
   const ageDays = Math.max(0, (Date.now() - ts) / 864e5);
-  return 0.15 / (1 + ageDays / 180);
+  return 0.5 / (1 + ageDays / 90);
 }
+var EXPANSION_THRESHOLD = 0.2;
+var EXPANSION_DISCOUNT = 0.85;
+function applyConfidenceAndRecency(results) {
+  return results.map((r) => ({
+    ...r,
+    score: (r.score + confidenceBonus(r.frontmatter.confidence)) * (1 + recencyBonus(r.frontmatter.updated))
+  }));
+}
+function decomposeQuery(query) {
+  const parts = query.split(/\band\s+(?:what|how|who|where|when|why|which)\b|[?;]/).map((s) => s.trim()).filter((s) => s.length > 15);
+  if (parts.length >= 2)
+    return parts;
+  return [query];
+}
+var METADATA_WEIGHT = 2;
 function computeBM25Scores(query, documents, k1 = 1.2, b = 0.75) {
   const queryTerms = [...new Set(tokenize(query))];
   if (queryTerms.length === 0 || documents.length === 0)
     return [];
   const N = documents.length;
-  const docTokens = [];
-  const docTokenSets = [];
+  const bodyTokensArr = [];
+  const metaTokensArr = [];
+  const allTokenSets = [];
   let totalLength = 0;
   for (const doc of documents) {
-    const meta3 = [doc.frontmatter.domain, doc.frontmatter.type, ...doc.frontmatter.tags || []].filter(Boolean).join(" ");
-    const searchText = doc.title + " " + extractBody(doc.content) + " " + meta3;
-    const tokens = tokenize(searchText);
-    docTokens.push(tokens);
-    docTokenSets.push(new Set(tokens));
-    totalLength += tokens.length;
+    const metaText = [doc.frontmatter.domain, doc.frontmatter.type, ...doc.frontmatter.tags || []].filter(Boolean).join(" ");
+    const searchKeys = Array.isArray(doc.frontmatter.search_keys) ? doc.frontmatter.search_keys.join(" ") : "";
+    const bodyText = doc.title + " " + extractBody(doc.content) + " " + searchKeys;
+    const bodyTokens = tokenize(bodyText);
+    const metaTokens = tokenize(metaText);
+    const allTokens = [...bodyTokens, ...metaTokens];
+    bodyTokensArr.push(bodyTokens);
+    metaTokensArr.push(metaTokens);
+    allTokenSets.push(new Set(allTokens));
+    totalLength += allTokens.length;
   }
   const avgdl = totalLength / N;
   const df = /* @__PURE__ */ new Map();
   for (const term of queryTerms) {
     let count = 0;
-    for (const tokenSet of docTokenSets) {
+    for (const tokenSet of allTokenSets) {
       if (tokenSet.has(term))
         count++;
     }
@@ -30221,11 +30242,15 @@ function computeBM25Scores(query, documents, k1 = 1.2, b = 0.75) {
   const results = [];
   for (let i = 0; i < documents.length; i++) {
     const doc = documents[i];
-    const tokens = docTokens[i];
-    const dl = tokens.length;
+    const bodyTokens = bodyTokensArr[i];
+    const metaTokens = metaTokensArr[i];
+    const dl = bodyTokens.length + metaTokens.length;
     const tfMap = /* @__PURE__ */ new Map();
-    for (const token of tokens) {
+    for (const token of bodyTokens) {
       tfMap.set(token, (tfMap.get(token) || 0) + 1);
+    }
+    for (const token of metaTokens) {
+      tfMap.set(token, (tfMap.get(token) || 0) + METADATA_WEIGHT);
     }
     let score = 0;
     for (const term of queryTerms) {
@@ -30292,7 +30317,7 @@ function applyLinkBoost(results, inboundCounts, weight = 0.2) {
 
 // dist/server.js
 var LORE_PATH = process.env.LORE_PATH || process.argv[2] || path.resolve(process.cwd(), "lore");
-var PLUGIN_VERSION = "0.4.0";
+var PLUGIN_VERSION = "0.6.0";
 var VALID_TYPES = [
   "concept",
   "entity",
@@ -30392,7 +30417,7 @@ async function resolveWikilink(linkText, titleMap, slugMap) {
 }
 var server = new McpServer({
   name: "lore",
-  version: "0.4.0"
+  version: "0.6.0"
 });
 server.registerTool("lore_read", {
   description: "Read a lore page by title or relative path (e.g. 'Lease Termination Rules' or 'rules/lease-termination.md'). Returns full page content including frontmatter.",
@@ -30484,10 +30509,7 @@ server.registerTool("lore_search", {
   let scored = computeBM25Scores(query, documents);
   const inboundCounts = buildInboundCounts(documents.map((d) => ({ title: d.title, content: d.content })));
   scored = applyLinkBoost(scored, inboundCounts);
-  const results = scored.map((r) => ({
-    ...r,
-    score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated)
-  }));
+  const results = applyConfidenceAndRecency(scored);
   results.sort((a, b) => {
     if (b.score !== a.score)
       return b.score - a.score;
@@ -30540,9 +30562,10 @@ server.registerTool("lore_write", {
     tags: external_exports3.array(external_exports3.string()).optional().describe("Optional tags"),
     derived_entries: external_exports3.array(external_exports3.string()).optional().describe("Source pages only. Titles of entries derived from this source"),
     source_url: external_exports3.string().optional().describe("Source pages only. Original URL of the ingested document"),
-    source_file: external_exports3.string().optional().describe("Source pages only. Original file path of the ingested document")
+    source_file: external_exports3.string().optional().describe("Source pages only. Original file path of the ingested document"),
+    search_keys: external_exports3.array(external_exports3.string()).optional().describe("Auto-generated search terms: synonyms, alternative phrasings, and questions this entry answers. Generated by the calling agent, not manually authored.")
   }
-}, async ({ title, type, body, confidence, sources, domain: domain2, tags, derived_entries, source_url, source_file }) => {
+}, async ({ title, type, body, confidence, sources, domain: domain2, tags, derived_entries, source_url, source_file, search_keys }) => {
   const existing = await findPageByTitle(title);
   const isUpdate = existing !== null;
   let filePath;
@@ -30569,7 +30592,8 @@ server.registerTool("lore_write", {
     tags,
     derived_entries: type === "source" ? derived_entries : void 0,
     source_url: type === "source" ? source_url : void 0,
-    source_file: type === "source" ? source_file : void 0
+    source_file: type === "source" ? source_file : void 0,
+    search_keys
   };
   const pageContent = buildPage(frontmatter, body);
   await fs.writeFile(filePath, pageContent, "utf-8");
@@ -30734,16 +30758,29 @@ server.registerTool("lore_query", {
       frontmatter: fm
     });
   }
-  let scored = computeBM25Scores(question, documents);
+  const subQueries = decomposeQuery(question);
+  let scored;
+  if (subQueries.length > 1) {
+    const mergedMap = /* @__PURE__ */ new Map();
+    for (const sq of subQueries) {
+      const subResults = computeBM25Scores(sq, documents);
+      for (const r of subResults) {
+        const existing = mergedMap.get(r.path);
+        if (!existing || r.score > existing.score) {
+          mergedMap.set(r.path, r);
+        }
+      }
+    }
+    scored = [...mergedMap.values()];
+  } else {
+    scored = computeBM25Scores(question, documents);
+  }
   const inboundCounts = buildInboundCounts(documents.map((d) => ({ title: d.title, content: d.content })));
   scored = applyLinkBoost(scored, inboundCounts);
-  const results = scored.map((r) => ({
-    ...r,
-    score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated)
-  }));
+  const results = applyConfidenceAndRecency(scored);
   results.sort((a, b) => b.score - a.score);
   const maxScore = results.length > 0 ? results[0].score : 0;
-  const qualifyingResults = maxScore > 0 ? results.filter((r) => r.score / maxScore >= 0.3) : [];
+  const qualifyingResults = maxScore > 0 ? results.filter((r) => r.score / maxScore >= EXPANSION_THRESHOLD) : [];
   let finalResults = [];
   const expansionSources = qualifyingResults.slice(0, 3);
   if (expansionSources.length > 0) {
@@ -30779,7 +30816,7 @@ server.registerTool("lore_query", {
         continue;
       finalResults.push({
         ...doc,
-        score: candidate.parentScore * 0.7
+        score: candidate.parentScore * EXPANSION_DISCOUNT
       });
       expansionCount++;
     }

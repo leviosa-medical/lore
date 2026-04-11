@@ -13,6 +13,7 @@ export interface Frontmatter {
   derived_entries?: string[];
   source_url?: string;
   source_file?: string;
+  search_keys?: string[];
   [key: string]: string | string[] | undefined;
 }
 
@@ -74,6 +75,7 @@ export function buildPage(
   writeField("sources", frontmatter.sources);
   writeField("confirmed_by", frontmatter.confirmed_by);
   writeField("tags", frontmatter.tags);
+  writeField("search_keys", frontmatter.search_keys);
   if (frontmatter.type === "source") {
     writeField("derived_entries", frontmatter.derived_entries);
     writeField("source_url", frontmatter.source_url);
@@ -109,9 +111,28 @@ export function recencyBonus(updated: string | undefined): number {
   const ts = Date.parse(updated);
   if (isNaN(ts)) return 0;
   const ageDays = Math.max(0, (Date.now() - ts) / 86400000);
-  // Half-life decay: up to 0.15 for entries updated today, halves every 180 days
-  return 0.15 / (1 + ageDays / 180);
+  // Half-life decay: up to 0.5 for entries updated today, halves every 90 days
+  return 0.5 / (1 + ageDays / 90);
 }
+
+export const EXPANSION_THRESHOLD = 0.2;
+export const EXPANSION_DISCOUNT = 0.85;
+
+export function applyConfidenceAndRecency(results: ScoredResult[]): ScoredResult[] {
+  return results.map((r) => ({
+    ...r,
+    score: (r.score + confidenceBonus(r.frontmatter.confidence)) * (1 + recencyBonus(r.frontmatter.updated as string)),
+  }));
+}
+
+export function decomposeQuery(query: string): string[] {
+  // Only split on compound-question patterns, not casual "and" conjunctions
+  const parts = query.split(/\band\s+(?:what|how|who|where|when|why|which)\b|[?;]/).map(s => s.trim()).filter(s => s.length > 15);
+  if (parts.length >= 2) return parts;
+  return [query];
+}
+
+export const METADATA_WEIGHT = 2.0;
 
 export function computeBM25Scores(
   query: string,
@@ -129,17 +150,22 @@ export function computeBM25Scores(
 
   const N = documents.length;
 
-  // Tokenize all documents and compute corpus stats
-  const docTokens: string[][] = [];
-  const docTokenSets: Set<string>[] = [];
+  // Tokenize all documents with separate body and metadata passes
+  const bodyTokensArr: string[][] = [];
+  const metaTokensArr: string[][] = [];
+  const allTokenSets: Set<string>[] = [];
   let totalLength = 0;
   for (const doc of documents) {
-    const meta = [doc.frontmatter.domain, doc.frontmatter.type, ...(doc.frontmatter.tags || [])].filter(Boolean).join(" ");
-    const searchText = doc.title + " " + extractBody(doc.content) + " " + meta;
-    const tokens = tokenize(searchText);
-    docTokens.push(tokens);
-    docTokenSets.push(new Set(tokens));
-    totalLength += tokens.length;
+    const metaText = [doc.frontmatter.domain, doc.frontmatter.type, ...(doc.frontmatter.tags || [])].filter(Boolean).join(" ");
+    const searchKeys = Array.isArray(doc.frontmatter.search_keys) ? doc.frontmatter.search_keys.join(" ") : "";
+    const bodyText = doc.title + " " + extractBody(doc.content) + " " + searchKeys;
+    const bodyTokens = tokenize(bodyText);
+    const metaTokens = tokenize(metaText);
+    const allTokens = [...bodyTokens, ...metaTokens];
+    bodyTokensArr.push(bodyTokens);
+    metaTokensArr.push(metaTokens);
+    allTokenSets.push(new Set(allTokens));
+    totalLength += allTokens.length;
   }
   const avgdl = totalLength / N;
 
@@ -147,7 +173,7 @@ export function computeBM25Scores(
   const df = new Map<string, number>();
   for (const term of queryTerms) {
     let count = 0;
-    for (const tokenSet of docTokenSets) {
+    for (const tokenSet of allTokenSets) {
       if (tokenSet.has(term)) count++;
     }
     df.set(term, count);
@@ -157,13 +183,17 @@ export function computeBM25Scores(
   const results: ScoredResult[] = [];
   for (let i = 0; i < documents.length; i++) {
     const doc = documents[i];
-    const tokens = docTokens[i];
-    const dl = tokens.length;
+    const bodyTokens = bodyTokensArr[i];
+    const metaTokens = metaTokensArr[i];
+    const dl = bodyTokens.length + metaTokens.length;
 
-    // Count term frequencies
+    // Weighted term frequencies: body=1.0, metadata=METADATA_WEIGHT
     const tfMap = new Map<string, number>();
-    for (const token of tokens) {
+    for (const token of bodyTokens) {
       tfMap.set(token, (tfMap.get(token) || 0) + 1);
+    }
+    for (const token of metaTokens) {
+      tfMap.set(token, (tfMap.get(token) || 0) + METADATA_WEIGHT);
     }
 
     let score = 0;

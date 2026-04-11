@@ -32,9 +32,11 @@ Capture domain knowledge into the lore knowledge base.
    - Ask if this is an update/correction or a separate entry
    - If updating: use `lore_write` to overwrite with the new content
 
-5. **Write the entry.** Use `lore_write` with all required fields. Present the written entry to the user for confirmation.
+5. **Generate search keys.** Before calling `lore_write`, generate 5-10 search keys for the entry: synonyms for key terms, alternative phrasings of the main concept, and 2-3 questions this entry would answer. Pass these as the `search_keys` parameter.
 
-6. **If it's NOT a lore entry**, explain where it should go instead:
+6. **Write the entry.** Use `lore_write` with all required fields including `search_keys`. Present the written entry to the user for confirmation.
+
+7. **If it's NOT a lore entry**, explain where it should go instead:
    - CLAUDE.md rules → "This is an imperative instruction. Add it to CLAUDE.md or .claude/rules/"
    - Skill instruction → "This is workflow logic. Create or update a skill definition."
 
