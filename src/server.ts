@@ -3,6 +3,21 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+  computeBM25Scores,
+  tokenize,
+  confidenceBonus,
+  recencyBonus,
+  applyLinkBoost,
+  buildInboundCounts,
+  extractWikilinks,
+  buildLookupMaps,
+  parseFrontmatter,
+  buildPage,
+  extractBody,
+  slugify,
+  type Frontmatter,
+} from "./scoring.js";
 
 // Lore root: env var, CLI arg, or fallback to ./lore in current working directory
 const LORE_PATH =
@@ -74,88 +89,6 @@ async function findMarkdownFiles(dir: string): Promise<string[]> {
   return results;
 }
 
-interface Frontmatter {
-  title?: string;
-  type?: string;
-  domain?: string;
-  confidence?: string;
-  created?: string;
-  updated?: string;
-  sources?: string[];
-  confirmed_by?: string[];
-  tags?: string[];
-  derived_entries?: string[];
-  source_url?: string;
-  source_file?: string;
-  [key: string]: string | string[] | undefined;
-}
-
-function parseFrontmatter(content: string): Frontmatter | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
-  const fields: Frontmatter = {};
-  for (const line of match[1].split("\n")) {
-    const kv = line.match(/^(\w[\w-]*):\s*(.*)/);
-    if (!kv) continue;
-    const [, key, rawValue] = kv;
-    const arrayMatch = rawValue.match(/^\[(.*)\]$/);
-    if (arrayMatch) {
-      const inner = arrayMatch[1].trim();
-      fields[key] = inner === ""
-        ? []
-        : inner.split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""));
-    } else {
-      fields[key] = rawValue.replace(/^["']|["']$/g, "");
-    }
-  }
-  return fields;
-}
-
-function extractBody(content: string): string {
-  const match = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)/);
-  return match ? match[1].trim() : content.trim();
-}
-
-function buildPage(
-  frontmatter: Frontmatter,
-  body: string
-): string {
-  const lines: string[] = ["---"];
-  const sanitize = (v: string) => v.replace(/[\n\r]/g, " ").replace(/"/g, '\\"');
-  const writeField = (key: string, value: string | string[] | undefined) => {
-    if (value === undefined) return;
-    if (Array.isArray(value)) {
-      lines.push(`${key}: [${value.map((v) => `"${sanitize(v)}"`).join(", ")}]`);
-    } else {
-      lines.push(`${key}: ${sanitize(value)}`);
-    }
-  };
-
-  writeField("title", frontmatter.title);
-  writeField("type", frontmatter.type);
-  writeField("domain", frontmatter.domain);
-  writeField("confidence", frontmatter.confidence);
-  writeField("created", frontmatter.created);
-  writeField("updated", frontmatter.updated);
-  writeField("sources", frontmatter.sources);
-  writeField("confirmed_by", frontmatter.confirmed_by);
-  writeField("tags", frontmatter.tags);
-  if (frontmatter.type === "source") {
-    writeField("derived_entries", frontmatter.derived_entries);
-    writeField("source_url", frontmatter.source_url);
-    writeField("source_file", frontmatter.source_file);
-  }
-
-  lines.push("---", "", body, "");
-  return lines.join("\n");
-}
-
-function slugify(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -188,116 +121,7 @@ async function findPageByTitle(
   return null;
 }
 
-/** Confidence bonus for ranking: verified > inferred > assumed. */
-function confidenceBonus(confidence: string | undefined): number {
-  if (confidence === "verified") return 0.3;
-  if (confidence === "inferred") return 0.15;
-  return 0;
-}
-
-// --- BM25 Scoring ---
-
-interface ScoredResult {
-  path: string;
-  title: string;
-  score: number;
-  content: string;
-  frontmatter: Frontmatter;
-}
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/\W+/)
-    .filter((w) => w.length > 2);
-}
-
-function computeBM25Scores(
-  query: string,
-  documents: Array<{
-    path: string;
-    title: string;
-    content: string;
-    frontmatter: Frontmatter;
-  }>,
-  k1 = 1.2,
-  b = 0.75
-): ScoredResult[] {
-  const queryTerms = [...new Set(tokenize(query))];
-  if (queryTerms.length === 0 || documents.length === 0) return [];
-
-  const N = documents.length;
-
-  // Tokenize all documents and compute corpus stats
-  const docTokens: string[][] = [];
-  const docTokenSets: Set<string>[] = [];
-  let totalLength = 0;
-  for (const doc of documents) {
-    const searchText = doc.title + " " + extractBody(doc.content);
-    const tokens = tokenize(searchText);
-    docTokens.push(tokens);
-    docTokenSets.push(new Set(tokens));
-    totalLength += tokens.length;
-  }
-  const avgdl = totalLength / N;
-
-  // Compute document frequency per query term
-  const df = new Map<string, number>();
-  for (const term of queryTerms) {
-    let count = 0;
-    for (const tokenSet of docTokenSets) {
-      if (tokenSet.has(term)) count++;
-    }
-    df.set(term, count);
-  }
-
-  // Score each document
-  const results: ScoredResult[] = [];
-  for (let i = 0; i < documents.length; i++) {
-    const doc = documents[i];
-    const tokens = docTokens[i];
-    const dl = tokens.length;
-
-    // Count term frequencies
-    const tfMap = new Map<string, number>();
-    for (const token of tokens) {
-      tfMap.set(token, (tfMap.get(token) || 0) + 1);
-    }
-
-    let score = 0;
-    for (const term of queryTerms) {
-      const termDf = df.get(term) || 0;
-      const idf = Math.log((N - termDf + 0.5) / (termDf + 0.5) + 1);
-      const tf = tfMap.get(term) || 0;
-      score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl)));
-    }
-
-    if (score > 0) {
-      results.push({
-        path: doc.path,
-        title: doc.title,
-        score,
-        content: doc.content,
-        frontmatter: doc.frontmatter,
-      });
-    }
-  }
-
-  return results;
-}
-
-// --- Wikilink & Graph Mechanics ---
-
-/** Strip code blocks from content before extracting wikilinks. */
-function extractWikilinks(content: string): string[] {
-  // Strip fenced code blocks
-  let stripped = content.replace(/^```[\s\S]*?^```/gm, "");
-  // Strip inline code
-  stripped = stripped.replace(/`[^`]+`/g, "");
-  // Extract [[wikilinks]]
-  const matches = [...stripped.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
-  return [...new Set(matches)];
-}
+// --- Wikilink Resolution (uses LORE_PATH, stays in server) ---
 
 /** Check that a resolved path is confined within LORE_PATH. */
 function isConfinedToLore(resolvedPath: string): boolean {
@@ -331,64 +155,6 @@ async function resolveWikilink(
   }
 
   return null;
-}
-
-/** Build title→path and slug→path maps from all documents. Alphabetical tiebreaker for duplicates. */
-function buildLookupMaps(
-  documents: Array<{ path: string; title: string }>
-): { titleMap: Map<string, string>; slugMap: Map<string, string> } {
-  const titleMap = new Map<string, string>();
-  const slugMap = new Map<string, string>();
-
-  // Sort documents by path alphabetically so first encountered wins tiebreaker
-  const sorted = [...documents].sort((a, b) => a.path.localeCompare(b.path));
-
-  for (const doc of sorted) {
-    const titleKey = doc.title.toLowerCase();
-    if (!titleMap.has(titleKey)) {
-      titleMap.set(titleKey, doc.path);
-    }
-    const slug = slugify(doc.title);
-    if (!slugMap.has(slug)) {
-      slugMap.set(slug, doc.path);
-    }
-  }
-
-  return { titleMap, slugMap };
-}
-
-/** Count inbound links for each page by title. */
-function buildInboundCounts(
-  documents: Array<{ title: string; content: string }>
-): Map<string, number> {
-  const counts = new Map<string, number>();
-
-  for (const doc of documents) {
-    const body = extractBody(doc.content);
-    const links = extractWikilinks(body);
-    // Count distinct source pages per target (deduplicate links within a single document)
-    const uniqueTargets = new Set(links.map((l) => l.toLowerCase()));
-    for (const target of uniqueTargets) {
-      counts.set(target, (counts.get(target) || 0) + 1);
-    }
-  }
-
-  return counts;
-}
-
-/** Apply log-dampened inbound link boost to scored results. */
-function applyLinkBoost(
-  results: ScoredResult[],
-  inboundCounts: Map<string, number>,
-  weight = 0.2
-): ScoredResult[] {
-  return results.map((r) => {
-    const count = inboundCounts.get(r.title.toLowerCase()) || 0;
-    return {
-      ...r,
-      score: r.score * (1 + weight * Math.log(1 + count)),
-    };
-  });
 }
 
 // --- Server ---
@@ -526,10 +292,10 @@ server.registerTool(
     );
     scored = applyLinkBoost(scored, inboundCounts);
 
-    // Confidence bonus (additive, after BM25 + link boost)
+    // Confidence + recency bonus (additive, after BM25 + link boost)
     const results = scored.map((r) => ({
       ...r,
-      score: r.score + confidenceBonus(r.frontmatter.confidence),
+      score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated as string),
     }));
 
     // Sort by score desc, then by updated desc
@@ -882,16 +648,16 @@ server.registerTool(
     );
     scored = applyLinkBoost(scored, inboundCounts);
 
-    // Step 4: Confidence bonus (additive)
+    // Step 4: Confidence + recency bonus (additive)
     const results = scored.map((r) => ({
       ...r,
-      score: r.score + confidenceBonus(r.frontmatter.confidence),
+      score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated as string),
     }));
 
     // Sort by score desc
     results.sort((a, b) => b.score - a.score);
 
-    // Step 5: 1-hop expansion when results are thin
+    // Step 5: 1-hop wikilink expansion from top results
     const maxScore = results.length > 0 ? results[0].score : 0;
     const qualifyingResults = maxScore > 0
       ? results.filter((r) => r.score / maxScore >= 0.3)
@@ -899,17 +665,19 @@ server.registerTool(
 
     let finalResults: typeof results = [];
 
-    if (qualifyingResults.length < 3 && qualifyingResults.length > 0) {
+    // Always expand from top qualifying results (up to 3 sources)
+    const expansionSources = qualifyingResults.slice(0, 3);
+    if (expansionSources.length > 0) {
       // Build lookup maps for wikilink resolution
       const { titleMap, slugMap } = buildLookupMaps(
         documents.map((d) => ({ path: d.path, title: d.title }))
       );
 
-      // Extract wikilinks from qualifying results
+      // Extract wikilinks from top results
       const existingPaths = new Set(results.map((r) => r.path));
       const expansionCandidates: Array<{ path: string; parentScore: number }> = [];
 
-      for (const result of qualifyingResults) {
+      for (const result of expansionSources) {
         const body = extractBody(result.content);
         const links = extractWikilinks(body);
 
@@ -941,22 +709,23 @@ server.registerTool(
 
         finalResults.push({
           ...doc,
-          score: candidate.parentScore * 0.5,
+          score: candidate.parentScore * 0.7,
         });
         expansionCount++;
       }
     }
 
-    // Compose final list: qualifying + expansion + remaining BM25
+    // Merge expansion pages into results by score
     if (finalResults.length === 0) {
       finalResults = [...results];
     } else {
       const expansionPaths = new Set(finalResults.map((r) => r.path));
-      const qualifyingPaths = new Set(qualifyingResults.map((r) => r.path));
-      const remaining = results.filter(
-        (r) => !qualifyingPaths.has(r.path) && !expansionPaths.has(r.path)
-      );
-      finalResults = [...qualifyingResults, ...finalResults, ...remaining];
+      const merged = [
+        ...results.filter((r) => !expansionPaths.has(r.path)),
+        ...finalResults,
+      ];
+      merged.sort((a, b) => b.score - a.score);
+      finalResults = merged;
     }
 
     // Step 6: Collect top results for output

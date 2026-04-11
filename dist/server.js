@@ -30115,60 +30115,8 @@ var StdioServerTransport = class {
 // dist/server.js
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-var LORE_PATH = process.env.LORE_PATH || process.argv[2] || path.resolve(process.cwd(), "lore");
-var PLUGIN_VERSION = "0.4.0";
-var VALID_TYPES = [
-  "concept",
-  "entity",
-  "rule",
-  "role",
-  "decision",
-  "glossary",
-  "source"
-];
-var VALID_CONFIDENCE = ["verified", "inferred", "assumed"];
-var TYPE_DIRS = {
-  concept: "concepts",
-  entity: "entities",
-  rule: "rules",
-  role: "roles",
-  decision: "decisions",
-  glossary: "glossary",
-  source: "sources"
-};
-async function fileExists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function readFile2(filePath) {
-  try {
-    return await fs.readFile(filePath, "utf-8");
-  } catch {
-    return null;
-  }
-}
-async function findMarkdownFiles(dir) {
-  const results = [];
-  let entries;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return results;
-  }
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...await findMarkdownFiles(full));
-    } else if (entry.name.endsWith(".md") && entry.name !== "index.md") {
-      results.push(full);
-    }
-  }
-  return results;
-}
+
+// dist/scoring.js
 function parseFrontmatter(content) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match)
@@ -30225,27 +30173,8 @@ function buildPage(frontmatter, body) {
 function slugify2(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
-function today() {
-  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-}
-async function appendOperation(record2) {
-  const logPath = path.join(LORE_PATH, "operations.jsonl");
-  const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...record2 }) + "\n";
-  await fs.appendFile(logPath, line, "utf-8");
-}
-async function findPageByTitle(title) {
-  const allFiles = await findMarkdownFiles(LORE_PATH);
-  const titleLower = title.toLowerCase();
-  for (const f of allFiles) {
-    const content = await readFile2(f);
-    if (!content)
-      continue;
-    const fm = parseFrontmatter(content);
-    if (fm && typeof fm.title === "string" && fm.title.toLowerCase() === titleLower) {
-      return [f, content];
-    }
-  }
-  return null;
+function tokenize(text) {
+  return text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
 }
 function confidenceBonus(confidence) {
   if (confidence === "verified")
@@ -30254,8 +30183,14 @@ function confidenceBonus(confidence) {
     return 0.15;
   return 0;
 }
-function tokenize(text) {
-  return text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
+function recencyBonus(updated) {
+  if (!updated)
+    return 0;
+  const ts = Date.parse(updated);
+  if (isNaN(ts))
+    return 0;
+  const ageDays = Math.max(0, (Date.now() - ts) / 864e5);
+  return 0.15 / (1 + ageDays / 180);
 }
 function computeBM25Scores(query, documents, k1 = 1.2, b = 0.75) {
   const queryTerms = [...new Set(tokenize(query))];
@@ -30266,7 +30201,8 @@ function computeBM25Scores(query, documents, k1 = 1.2, b = 0.75) {
   const docTokenSets = [];
   let totalLength = 0;
   for (const doc of documents) {
-    const searchText = doc.title + " " + extractBody(doc.content);
+    const meta3 = [doc.frontmatter.domain, doc.frontmatter.type, ...doc.frontmatter.tags || []].filter(Boolean).join(" ");
+    const searchText = doc.title + " " + extractBody(doc.content) + " " + meta3;
     const tokens = tokenize(searchText);
     docTokens.push(tokens);
     docTokenSets.push(new Set(tokens));
@@ -30316,29 +30252,6 @@ function extractWikilinks(content) {
   const matches = [...stripped.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
   return [...new Set(matches)];
 }
-function isConfinedToLore(resolvedPath) {
-  const normalized = path.resolve(resolvedPath);
-  const loreRoot = path.resolve(LORE_PATH);
-  return normalized === loreRoot || normalized.startsWith(loreRoot + path.sep);
-}
-async function resolveWikilink(linkText, titleMap, slugMap) {
-  const titlePath = titleMap.get(linkText.toLowerCase());
-  if (titlePath)
-    return titlePath;
-  const slug = slugify2(linkText);
-  const slugPath = slugMap.get(slug);
-  if (slugPath)
-    return slugPath;
-  if (linkText.includes("/") || linkText.endsWith(".md")) {
-    const directPath = path.join(LORE_PATH, linkText);
-    if (!isConfinedToLore(directPath))
-      return null;
-    if (await fileExists(directPath)) {
-      return path.relative(LORE_PATH, directPath);
-    }
-  }
-  return null;
-}
 function buildLookupMaps(documents) {
   const titleMap = /* @__PURE__ */ new Map();
   const slugMap = /* @__PURE__ */ new Map();
@@ -30375,6 +30288,107 @@ function applyLinkBoost(results, inboundCounts, weight = 0.2) {
       score: r.score * (1 + weight * Math.log(1 + count))
     };
   });
+}
+
+// dist/server.js
+var LORE_PATH = process.env.LORE_PATH || process.argv[2] || path.resolve(process.cwd(), "lore");
+var PLUGIN_VERSION = "0.4.0";
+var VALID_TYPES = [
+  "concept",
+  "entity",
+  "rule",
+  "role",
+  "decision",
+  "glossary",
+  "source"
+];
+var VALID_CONFIDENCE = ["verified", "inferred", "assumed"];
+var TYPE_DIRS = {
+  concept: "concepts",
+  entity: "entities",
+  rule: "rules",
+  role: "roles",
+  decision: "decisions",
+  glossary: "glossary",
+  source: "sources"
+};
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readFile2(filePath) {
+  try {
+    return await fs.readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+async function findMarkdownFiles(dir) {
+  const results = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...await findMarkdownFiles(full));
+    } else if (entry.name.endsWith(".md") && entry.name !== "index.md") {
+      results.push(full);
+    }
+  }
+  return results;
+}
+function today() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+async function appendOperation(record2) {
+  const logPath = path.join(LORE_PATH, "operations.jsonl");
+  const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...record2 }) + "\n";
+  await fs.appendFile(logPath, line, "utf-8");
+}
+async function findPageByTitle(title) {
+  const allFiles = await findMarkdownFiles(LORE_PATH);
+  const titleLower = title.toLowerCase();
+  for (const f of allFiles) {
+    const content = await readFile2(f);
+    if (!content)
+      continue;
+    const fm = parseFrontmatter(content);
+    if (fm && typeof fm.title === "string" && fm.title.toLowerCase() === titleLower) {
+      return [f, content];
+    }
+  }
+  return null;
+}
+function isConfinedToLore(resolvedPath) {
+  const normalized = path.resolve(resolvedPath);
+  const loreRoot = path.resolve(LORE_PATH);
+  return normalized === loreRoot || normalized.startsWith(loreRoot + path.sep);
+}
+async function resolveWikilink(linkText, titleMap, slugMap) {
+  const titlePath = titleMap.get(linkText.toLowerCase());
+  if (titlePath)
+    return titlePath;
+  const slug = slugify2(linkText);
+  const slugPath = slugMap.get(slug);
+  if (slugPath)
+    return slugPath;
+  if (linkText.includes("/") || linkText.endsWith(".md")) {
+    const directPath = path.join(LORE_PATH, linkText);
+    if (!isConfinedToLore(directPath))
+      return null;
+    if (await fileExists(directPath)) {
+      return path.relative(LORE_PATH, directPath);
+    }
+  }
+  return null;
 }
 var server = new McpServer({
   name: "lore",
@@ -30472,7 +30486,7 @@ server.registerTool("lore_search", {
   scored = applyLinkBoost(scored, inboundCounts);
   const results = scored.map((r) => ({
     ...r,
-    score: r.score + confidenceBonus(r.frontmatter.confidence)
+    score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated)
   }));
   results.sort((a, b) => {
     if (b.score !== a.score)
@@ -30725,17 +30739,18 @@ server.registerTool("lore_query", {
   scored = applyLinkBoost(scored, inboundCounts);
   const results = scored.map((r) => ({
     ...r,
-    score: r.score + confidenceBonus(r.frontmatter.confidence)
+    score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated)
   }));
   results.sort((a, b) => b.score - a.score);
   const maxScore = results.length > 0 ? results[0].score : 0;
   const qualifyingResults = maxScore > 0 ? results.filter((r) => r.score / maxScore >= 0.3) : [];
   let finalResults = [];
-  if (qualifyingResults.length < 3 && qualifyingResults.length > 0) {
+  const expansionSources = qualifyingResults.slice(0, 3);
+  if (expansionSources.length > 0) {
     const { titleMap, slugMap } = buildLookupMaps(documents.map((d) => ({ path: d.path, title: d.title })));
     const existingPaths = new Set(results.map((r) => r.path));
     const expansionCandidates = [];
-    for (const result of qualifyingResults) {
+    for (const result of expansionSources) {
       const body = extractBody(result.content);
       const links = extractWikilinks(body);
       for (const linkText of links) {
@@ -30764,7 +30779,7 @@ server.registerTool("lore_query", {
         continue;
       finalResults.push({
         ...doc,
-        score: candidate.parentScore * 0.5
+        score: candidate.parentScore * 0.7
       });
       expansionCount++;
     }
@@ -30773,9 +30788,12 @@ server.registerTool("lore_query", {
     finalResults = [...results];
   } else {
     const expansionPaths = new Set(finalResults.map((r) => r.path));
-    const qualifyingPaths = new Set(qualifyingResults.map((r) => r.path));
-    const remaining = results.filter((r) => !qualifyingPaths.has(r.path) && !expansionPaths.has(r.path));
-    finalResults = [...qualifyingResults, ...finalResults, ...remaining];
+    const merged = [
+      ...results.filter((r) => !expansionPaths.has(r.path)),
+      ...finalResults
+    ];
+    merged.sort((a, b) => b.score - a.score);
+    finalResults = merged;
   }
   const topResults = finalResults.slice(0, 10);
   if (topResults.length === 0) {

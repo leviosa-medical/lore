@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-11
+
+### Added
+
+- **Eval benchmark harness** — `node eval/run.js` runs a LongMemEval-inspired retrieval quality benchmark against a deterministic synthetic corpus, measuring Recall@k and NDCG@k across six abilities (information extraction, multi-hop reasoning, knowledge updates, keyword metadata, filtered search, abstention). Produces a results table and JSON report. Supports `--tier`, `--layer`, `--threshold`, and `--max-latency-ms` flags for CI gating
+- **Recency bonus** — recently updated entries now receive a small additive score boost (up to +0.15, decaying with a 180-day half-life), so newer versions of a concept rank above older ones when BM25 scores are similar
+- **Metadata in BM25 search text** — domain, type, and tags are now appended to the BM25 search text, improving retrieval when queries reference metadata terms (e.g., "billing glossary") rather than body content
+
+### Changed
+
+- **1-hop wikilink expansion** now always expands from the top 3 results and interleaves expansion pages by score, instead of only triggering when fewer than 3 results qualify. Multi-hop Recall@5 improved from 0.51 to 0.67 (+31%) with no regressions on other abilities
+- **Expansion page score factor** increased from 0.5× to 0.7× parent score, so linked entries rank more competitively against BM25 results
+
+### Internal
+
+- **Scoring extraction** — pure scoring functions (`computeBM25Scores`, `tokenize`, `confidenceBonus`, `recencyBonus`, `applyLinkBoost`, `extractWikilinks`, etc.) extracted from `src/server.ts` into `src/scoring.ts` for direct unit testing by the eval harness
+- Removed unused `ScoredResult` type import from `src/server.ts`
+
 ## [0.4.0] - 2026-04-10
 
 ### Added
