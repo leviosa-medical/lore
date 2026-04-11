@@ -28,7 +28,7 @@ const LORE_PATH =
   process.argv[2] ||
   path.resolve(process.cwd(), "lore");
 
-const PLUGIN_VERSION = "0.4.0";
+const PLUGIN_VERSION = "0.6.0";
 
 const VALID_TYPES = [
   "concept",
@@ -164,7 +164,7 @@ async function resolveWikilink(
 
 const server = new McpServer({
   name: "lore",
-  version: "0.4.0",
+  version: "0.6.0",
 });
 
 /**

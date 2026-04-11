@@ -30317,7 +30317,7 @@ function applyLinkBoost(results, inboundCounts, weight = 0.2) {
 
 // dist/server.js
 var LORE_PATH = process.env.LORE_PATH || process.argv[2] || path.resolve(process.cwd(), "lore");
-var PLUGIN_VERSION = "0.4.0";
+var PLUGIN_VERSION = "0.6.0";
 var VALID_TYPES = [
   "concept",
   "entity",
@@ -30417,7 +30417,7 @@ async function resolveWikilink(linkText, titleMap, slugMap) {
 }
 var server = new McpServer({
   name: "lore",
-  version: "0.4.0"
+  version: "0.6.0"
 });
 server.registerTool("lore_read", {
   description: "Read a lore page by title or relative path (e.g. 'Lease Termination Rules' or 'rules/lease-termination.md'). Returns full page content including frontmatter.",

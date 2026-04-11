@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-11
+
+### Added
+
+- **`search_keys` field** — new optional `string[]` frontmatter field on lore entries for agent-generated synonyms, alternative phrasings, and "questions this entry answers." Accepted by **`lore_write`** and included in BM25 scoring. Bridges vocabulary mismatch when users search with different words than entries contain
+- **Query decomposition** — **`lore_query`** now detects compound questions (e.g., "what role handles X and what is the notice period?") and splits them into sub-queries, running BM25 independently on each and merging results. Avoids diluting relevance across unrelated terms
+- **`decomposeQuery` unit test** — covers 6 cases including compound splits, casual "and" passthrough, and fragment length filtering
+- **Metadata weighting unit test** — verifies that domain/type/tags matches score higher than incidental body-text matches
+
+### Changed
+
+- **Recency bonus** — now multiplicative instead of additive, with a stronger peak (0.50, up from 0.15) and faster decay (90-day half-life, down from 180). Applied as `(score + confidence) × (1 + recency)` so the bonus scales with relevance rather than dominating low-scoring entries. Knowledge Updates Recall@5 improved from 0.50 to 0.70 (+40%)
+- **Field-specific BM25 boosting** — metadata fields (domain, type, tags) now receive 2× term frequency weight in BM25 scoring, so a query for "billing concept" strongly prefers entries where `domain=billing` and `type=concept` over entries that merely mention those words in body text. Keyword Metadata Recall@5 improved from 0.93 to 0.95
+- **Wikilink expansion parameters** — qualifying threshold lowered from 0.3 to 0.2 (more mid-scoring entries expand) and discount raised from 0.7× to 0.85× parent score (expanded results rank more competitively)
+- **`/lore:capture` skill** — now instructs agents to generate 5-10 search keys before calling `lore_write`
+- **`/lore:bootstrap` skill** — now instructs agents to generate search keys for each derived entry
+
+### Internal
+
+- Extracted `applyConfidenceAndRecency` helper into `scoring.ts` to deduplicate the scoring formula between **`lore_search`** and **`lore_query`**
+- Moved `EXPANSION_THRESHOLD` and `EXPANSION_DISCOUNT` from inline constants in `server.ts` to exported constants in `scoring.ts`, consistent with `METADATA_WEIGHT`
+- Added explicit `search_keys` field to `Frontmatter` interface with `Array.isArray` runtime guard
+
 ## [0.5.0] - 2026-04-11
 
 ### Added
