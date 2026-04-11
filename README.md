@@ -28,8 +28,9 @@ Entries link to each other using `[[wikilinks]]`. When you query the lore, the s
 
 - **BM25 ranking** scores results by keyword relevance, not naive string matching.
 - **Inbound link boost** promotes well-connected hub pages — central concepts surface first.
-- **1-hop expansion** automatically includes linked neighbor pages when initial results are thin (fewer than 3 qualifying results).
+- **1-hop expansion** automatically includes linked neighbor pages from top results, interleaved by score.
 - **Confidence bonus** ranks verified entries above inferred and assumed ones.
+- **Recency bonus** gives a small boost to recently updated entries.
 
 ### Source provenance
 
@@ -218,6 +219,35 @@ Check that the entry has valid YAML frontmatter with a `title` field. The search
 ### Stale plugin version
 
 The MCP server logs a warning on startup if the installed version doesn't match the plugin version. Run `/lore:init` again to update.
+
+## Eval benchmark
+
+A retrieval quality benchmark inspired by [LongMemEval](https://arxiv.org/abs/2410.10813) lives in `eval/`. It generates a deterministic synthetic knowledge graph, asks questions it already knows the answers to, and measures how well the scoring engine retrieves and ranks the correct entries.
+
+### Running
+
+```bash
+node eval/run.js                          # full run (small corpus, all layers)
+node eval/run.js --layer unit             # unit tests only (fast)
+node eval/run.js --tier medium            # 200-entry corpus
+node eval/run.js --threshold 0.8          # CI gate: fail if Recall@5 < 0.8
+node eval/run.js --max-latency-ms 100     # fail if p95 latency exceeds 100ms
+```
+
+### What it measures
+
+Six retrieval abilities, each testing a different aspect of the scoring pipeline:
+
+| Ability | Tests |
+|---|---|
+| Information Extraction | BM25 keyword matching on unique terms |
+| Multi-hop Reasoning | Wikilink expansion pulling in linked entries |
+| Knowledge Updates | Recency ranking when v1/v2 entries share vocabulary |
+| Keyword Metadata | Matching on tags, domain, and type metadata |
+| Filtered Search | Domain and confidence filter correctness |
+| Abstention | Returning zero results for irrelevant queries |
+
+Results are printed as a table to stdout and saved as JSON to `eval/results/`.
 
 ## Design principles
 

@@ -104,6 +104,15 @@ export function confidenceBonus(confidence: string | undefined): number {
   return 0;
 }
 
+export function recencyBonus(updated: string | undefined): number {
+  if (!updated) return 0;
+  const ts = Date.parse(updated);
+  if (isNaN(ts)) return 0;
+  const ageDays = Math.max(0, (Date.now() - ts) / 86400000);
+  // Half-life decay: up to 0.15 for entries updated today, halves every 180 days
+  return 0.15 / (1 + ageDays / 180);
+}
+
 export function computeBM25Scores(
   query: string,
   documents: Array<{
@@ -125,7 +134,8 @@ export function computeBM25Scores(
   const docTokenSets: Set<string>[] = [];
   let totalLength = 0;
   for (const doc of documents) {
-    const searchText = doc.title + " " + extractBody(doc.content);
+    const meta = [doc.frontmatter.domain, doc.frontmatter.type, ...(doc.frontmatter.tags || [])].filter(Boolean).join(" ");
+    const searchText = doc.title + " " + extractBody(doc.content) + " " + meta;
     const tokens = tokenize(searchText);
     docTokens.push(tokens);
     docTokenSets.push(new Set(tokens));

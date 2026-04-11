@@ -7,6 +7,7 @@ import {
   computeBM25Scores,
   tokenize,
   confidenceBonus,
+  recencyBonus,
   applyLinkBoost,
   buildInboundCounts,
   extractWikilinks,
@@ -16,7 +17,6 @@ import {
   extractBody,
   slugify,
   type Frontmatter,
-  type ScoredResult,
 } from "./scoring.js";
 
 // Lore root: env var, CLI arg, or fallback to ./lore in current working directory
@@ -292,10 +292,10 @@ server.registerTool(
     );
     scored = applyLinkBoost(scored, inboundCounts);
 
-    // Confidence bonus (additive, after BM25 + link boost)
+    // Confidence + recency bonus (additive, after BM25 + link boost)
     const results = scored.map((r) => ({
       ...r,
-      score: r.score + confidenceBonus(r.frontmatter.confidence),
+      score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated as string),
     }));
 
     // Sort by score desc, then by updated desc
@@ -648,16 +648,16 @@ server.registerTool(
     );
     scored = applyLinkBoost(scored, inboundCounts);
 
-    // Step 4: Confidence bonus (additive)
+    // Step 4: Confidence + recency bonus (additive)
     const results = scored.map((r) => ({
       ...r,
-      score: r.score + confidenceBonus(r.frontmatter.confidence),
+      score: r.score + confidenceBonus(r.frontmatter.confidence) + recencyBonus(r.frontmatter.updated as string),
     }));
 
     // Sort by score desc
     results.sort((a, b) => b.score - a.score);
 
-    // Step 5: 1-hop expansion when results are thin
+    // Step 5: 1-hop wikilink expansion from top results
     const maxScore = results.length > 0 ? results[0].score : 0;
     const qualifyingResults = maxScore > 0
       ? results.filter((r) => r.score / maxScore >= 0.3)
@@ -665,17 +665,19 @@ server.registerTool(
 
     let finalResults: typeof results = [];
 
-    if (qualifyingResults.length < 3 && qualifyingResults.length > 0) {
+    // Always expand from top qualifying results (up to 3 sources)
+    const expansionSources = qualifyingResults.slice(0, 3);
+    if (expansionSources.length > 0) {
       // Build lookup maps for wikilink resolution
       const { titleMap, slugMap } = buildLookupMaps(
         documents.map((d) => ({ path: d.path, title: d.title }))
       );
 
-      // Extract wikilinks from qualifying results
+      // Extract wikilinks from top results
       const existingPaths = new Set(results.map((r) => r.path));
       const expansionCandidates: Array<{ path: string; parentScore: number }> = [];
 
-      for (const result of qualifyingResults) {
+      for (const result of expansionSources) {
         const body = extractBody(result.content);
         const links = extractWikilinks(body);
 
@@ -707,22 +709,23 @@ server.registerTool(
 
         finalResults.push({
           ...doc,
-          score: candidate.parentScore * 0.5,
+          score: candidate.parentScore * 0.7,
         });
         expansionCount++;
       }
     }
 
-    // Compose final list: qualifying + expansion + remaining BM25
+    // Merge expansion pages into results by score
     if (finalResults.length === 0) {
       finalResults = [...results];
     } else {
       const expansionPaths = new Set(finalResults.map((r) => r.path));
-      const qualifyingPaths = new Set(qualifyingResults.map((r) => r.path));
-      const remaining = results.filter(
-        (r) => !qualifyingPaths.has(r.path) && !expansionPaths.has(r.path)
-      );
-      finalResults = [...qualifyingResults, ...finalResults, ...remaining];
+      const merged = [
+        ...results.filter((r) => !expansionPaths.has(r.path)),
+        ...finalResults,
+      ];
+      merged.sort((a, b) => b.score - a.score);
+      finalResults = merged;
     }
 
     // Step 6: Collect top results for output
