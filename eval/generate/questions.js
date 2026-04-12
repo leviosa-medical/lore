@@ -53,14 +53,13 @@ export function generateQuestions(manifest, tier) {
 
   const allTitles = Object.keys(manifest);
   const titlesWithHistory = allTitles.filter(t => manifest[t].historyTerms && manifest[t].historyTerms.length > 0);
-  const baseTitles = allTitles;
 
   // -------------------------------------------------------------------------
   // Ability 1: information_extraction
   // -------------------------------------------------------------------------
-  // Pick non-v2 entries; use one of their uniqueTerms as query.
+  // Pick entries; use one of their uniqueTerms as query.
   {
-    const candidates = pickDistinct(rng, baseTitles, counts.information_extraction);
+    const candidates = pickDistinct(rng, allTitles, counts.information_extraction);
     for (let i = 0; i < candidates.length; i++) {
       const title = candidates[i];
       const entry = manifest[title];
@@ -82,7 +81,7 @@ export function generateQuestions(manifest, tier) {
   // query. expected_titles = [source] + 1-hop targets.
   // grades: source = 1.0, each wikilink target = 0.5.
   {
-    const withLinks = baseTitles.filter(t => manifest[t].wikilinks.length > 0);
+    const withLinks = allTitles.filter(t => manifest[t].wikilinks.length > 0);
     const candidates = pickDistinct(rng, withLinks, counts.multi_hop);
     for (let i = 0; i < candidates.length; i++) {
       const sourceTitle = candidates[i];
@@ -139,8 +138,7 @@ export function generateQuestions(manifest, tier) {
 
     // Negative questions
     for (let i = 0; i < Math.min(negativeCount, candidates.length); i++) {
-      const candidateIdx = i < candidates.length ? i : i % candidates.length;
-      const title = candidates[candidateIdx];
+      const title = candidates[i];
       const entry = manifest[title];
       const historyTerm = entry.historyTerms[rng.next() % entry.historyTerms.length];
       questions.push({
@@ -206,7 +204,7 @@ export function generateQuestions(manifest, tier) {
       const kind = filterKinds[i % filterKinds.length];
 
       // Pick a random base entry to build the query from
-      const sourceTitle = baseTitles[rng.next() % baseTitles.length];
+      const sourceTitle = allTitles[rng.next() % allTitles.length];
       const sourceEntry = manifest[sourceTitle];
       const term = sourceEntry.uniqueTerms[rng.next() % sourceEntry.uniqueTerms.length];
 

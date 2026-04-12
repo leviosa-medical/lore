@@ -181,7 +181,6 @@ export async function generateCorpus(tier, outputDir) {
   // -------------------------------------------------------------------------
   // Phase 1: Plan all base entries
   // -------------------------------------------------------------------------
-  const baseCount = totalEntries;
 
   // Build proportional type array for totalEntries entries, then shuffle
   // Distribution: 24% concepts, 20% entities, 16% rules, 10% roles,
@@ -255,7 +254,7 @@ export async function generateCorpus(tier, outputDir) {
     }
     titleSet.add(title);
 
-    // Temporal metadata: spread over first half of 365-day range (v1 entries)
+    // Temporal metadata: spread over first half of 365-day range
     const createdOffset = rng.int(0, rangeHalf);
     const updatedOffset = rng.int(createdOffset, rangeHalf);
 
