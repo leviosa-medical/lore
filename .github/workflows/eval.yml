@@ -33,6 +33,10 @@ jobs:
         continue-on-error: true
         run: node eval/run.js --layer all --output eval/results/
 
+      - name: Fetch baseline from base branch
+        run: |
+          git show origin/${{ github.event.pull_request.base.ref }}:eval/baseline.json > /tmp/base-baseline.json
+
       - name: Compare against baseline
         id: compare
         run: |
@@ -48,7 +52,7 @@ jobs:
             echo "compare_exit=0" >> "$GITHUB_OUTPUT"
           else
             set +e
-            node eval/compare.js --baseline eval/baseline.json --current "$REPORT" --tolerance 0.05 --format markdown > /tmp/eval-comment.md
+            node eval/compare.js --baseline /tmp/base-baseline.json --current "$REPORT" --tolerance 0.05 --format markdown > /tmp/eval-comment.md
             COMPARE_EXIT=$?
             set -e
             echo "compare_exit=$COMPARE_EXIT" >> "$GITHUB_OUTPUT"

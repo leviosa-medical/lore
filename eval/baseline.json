@@ -1,44 +1,43 @@
 {
-  "generated_at": "2026-04-12T00:38:43.054Z",
+  "generated_at": "2026-04-11T17:51:39.994Z",
   "tier": "small",
   "layer": "all",
-  "commit": "7f56784",
+  "commit": "33bba99",
   "abilities": {
     "information_extraction": {
       "recall_at_1": 0.8,
       "recall_at_5": 1,
       "recall_at_10": 1,
-      "ndcg_at_5": 0.9017782560805999,
-      "ndcg_at_10": 0.9017782560805999
+      "ndcg_at_5": 0.9261859507142916,
+      "ndcg_at_10": 0.9261859507142916
     },
     "multi_hop": {
-      "recall_at_1": 0.125,
-      "recall_at_5": 0.5104166666666666,
-      "recall_at_10": 0.6666666666666666,
-      "ndcg_at_5": 0.4863836246285471,
-      "ndcg_at_10": 0.5710613627777632
+      "recall_at_1": 0.17708333333333331,
+      "recall_at_5": 0.6666666666666666,
+      "recall_at_10": 0.8125000000000001,
+      "ndcg_at_5": 0.6585804760890931,
+      "ndcg_at_10": 0.7313259383415346
     },
     "knowledge_updates": {
-      "recall_at_1": 0.6666666666666666,
-      "recall_at_5": 1,
-      "recall_at_10": 1,
-      "ndcg_at_5": 0.8769765845238192,
-      "ndcg_at_10": 0.8769765845238192,
-      "history_isolation_accuracy": 1
+      "recall_at_1": 0.3,
+      "recall_at_5": 0.5,
+      "recall_at_10": 0.8,
+      "ndcg_at_5": 0.4766425774896801,
+      "ndcg_at_10": 0.5998858250944644
     },
     "keyword_metadata": {
-      "recall_at_1": 0.5833333333333334,
-      "recall_at_5": 0.9,
+      "recall_at_1": 0.2833333333333333,
+      "recall_at_5": 0.9333333333333332,
       "recall_at_10": 1,
-      "ndcg_at_5": 0.8976091290489145,
-      "ndcg_at_10": 0.9427185426884448
+      "ndcg_at_5": 0.8588256772959069,
+      "ndcg_at_10": 0.8901109256974241
     },
     "filtered_search": {
-      "recall_at_1": 0.4,
+      "recall_at_1": 0.6,
       "recall_at_5": 0.8,
       "recall_at_10": 1,
-      "ndcg_at_5": 0.6261859507142915,
-      "ndcg_at_10": 0.6974273881358959
+      "ndcg_at_5": 0.7261859507142916,
+      "ndcg_at_10": 0.797427388135896
     },
     "abstention": {
       "abstention_accuracy": 1
