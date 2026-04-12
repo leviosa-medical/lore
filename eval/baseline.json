@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-04-12T09:55:25.633Z",
+  "generated_at": "2026-04-12T10:18:28.769Z",
   "tier": "small",
   "layer": "all",
-  "commit": "2e17575",
+  "commit": "4260a49",
   "abilities": {
     "information_extraction": {
       "recall_at_1": 1,
@@ -13,15 +13,15 @@
     },
     "multi_hop": {
       "recall_at_1": 0.2854761904761905,
-      "recall_at_5": 0.5296428571428571,
-      "recall_at_10": 0.6576190476190475,
-      "ndcg_at_5": 0.6058169939602379,
-      "ndcg_at_10": 0.6583225094635685,
+      "recall_at_5": 0.6163095238095238,
+      "recall_at_10": 0.7167857142857142,
+      "ndcg_at_5": 0.6740770744035733,
+      "ndcg_at_10": 0.7135964758878204,
       "sub_types": {
         "forward_1hop": 0.5,
-        "reverse_1hop": 0.28523809523809524,
-        "two_hop_chain": 0.5333333333333333,
-        "shared_attribute": 0.8
+        "reverse_1hop": 0.6052380952380951,
+        "two_hop_chain": 0.5999999999999999,
+        "shared_attribute": 0.76
       }
     },
     "knowledge_updates": {
