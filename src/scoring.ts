@@ -301,3 +301,114 @@ export function applyLinkBoost(
     };
   });
 }
+
+export interface GraphEdge {
+  source: string; // relative path
+  target: string; // relative path
+}
+
+export function buildWikilinkGraph(
+  documents: Array<{ path: string; content: string; title?: string }>,
+  titleMap: Map<string, string>,
+  slugMap: Map<string, string>
+): Map<string, Set<string>> {
+  const graph = new Map<string, Set<string>>();
+
+  // Initialize all document paths with empty sets (so isolated nodes exist)
+  for (const doc of documents) {
+    graph.set(doc.path, new Set<string>());
+  }
+
+  for (const doc of documents) {
+    const body = extractBody(doc.content);
+    const linkTexts = extractWikilinks(body);
+
+    for (const linkText of linkTexts) {
+      // Try to resolve via titleMap (case-insensitive)
+      let resolvedPath = titleMap.get(linkText.toLowerCase());
+
+      // Fall back to slugMap
+      if (!resolvedPath) {
+        resolvedPath = slugMap.get(slugify(linkText));
+      }
+
+      if (!resolvedPath) continue;
+
+      // Add bidirectional edges
+      graph.get(doc.path)!.add(resolvedPath);
+
+      // Ensure the target node exists in the graph (may be an isolated node added above)
+      if (!graph.has(resolvedPath)) {
+        graph.set(resolvedPath, new Set<string>());
+      }
+      graph.get(resolvedPath)!.add(doc.path);
+    }
+  }
+
+  return graph;
+}
+
+export const PPR_ALPHA = 0.85;
+export const PPR_ITERATIONS = 20;
+export const PPR_MIN_SCORE = 0.001;
+export const MAX_EXPANSION = 5;
+
+export function seededPageRank(
+  graph: Map<string, Set<string>>,
+  seeds: Map<string, number>,
+  alpha: number = PPR_ALPHA,
+  iterations: number = PPR_ITERATIONS,
+  minScore: number = PPR_MIN_SCORE
+): Map<string, number> {
+  if (graph.size === 0 || seeds.size === 0) return new Map<string, number>();
+
+  // Normalize seed scores to sum=1
+  let seedTotal = 0;
+  for (const v of seeds.values()) seedTotal += v;
+  const seedVec = new Map<string, number>();
+  for (const [path, v] of seeds) {
+    seedVec.set(path, v / seedTotal);
+  }
+
+  // Initialize scores from seedVec
+  const scores = new Map<string, number>(seedVec);
+
+  // Collect all nodes present as keys in graph
+  const allNodes = Array.from(graph.keys());
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const nextScores = new Map<string, number>();
+
+    // Teleportation term: (1 - alpha) * seed[node]
+    for (const node of allNodes) {
+      nextScores.set(node, (1 - alpha) * (seedVec.get(node) || 0));
+    }
+
+    // Propagation: distribute alpha * scores[node] / degree to each neighbor
+    for (const node of allNodes) {
+      const nodeScore = scores.get(node) || 0;
+      const neighbors = graph.get(node);
+      if (!neighbors || neighbors.size === 0) continue;
+      const degree = neighbors.size;
+      const contribution = (alpha * nodeScore) / degree;
+      for (const neighbor of neighbors) {
+        nextScores.set(neighbor, (nextScores.get(neighbor) || 0) + contribution);
+      }
+    }
+
+    // Update scores
+    for (const [node, score] of nextScores) {
+      scores.set(node, score);
+    }
+  }
+
+  // Return non-seed nodes with score >= minScore
+  const result = new Map<string, number>();
+  for (const [path, score] of scores) {
+    if (!seeds.has(path) && score >= minScore) {
+      result.set(path, score);
+    }
+  }
+
+  return result;
+}
