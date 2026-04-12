@@ -124,6 +124,7 @@ jobs:
             'ndcg_at_5',
             'ndcg_at_10',
             'abstention_accuracy',
+            'history_isolation_accuracy',
           ];
 
           const abilities = {};

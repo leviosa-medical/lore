@@ -431,7 +431,7 @@ server.registerTool(
 
       if (historyIdx !== -1) {
         // Existing history: prepend new note after the heading
-        const historyContent = existingBody.slice(historyIdx + HISTORY_MARKER.length);
+        const historyContent = existingBody.slice(historyIdx + HISTORY_MARKER.length).trimStart();
         finalBody = body + HISTORY_MARKER + newLine + "\n" + historyContent;
       } else {
         // No existing history: append new section

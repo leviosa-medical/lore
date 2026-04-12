@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-12
+
+### Added
+
+- **`change_note` parameter on `lore_write`** — required when updating an existing entry (same title). Describes what changed and why. The system appends a timestamped note to a `## History` section at the bottom of the entry body, preserving the evolution of a concept in-place. Answers "wasn't this different before?" without leaving the entry
+- **BM25 history stripping** — new `extractSearchableBody` function strips everything below `## History` before BM25 indexing, so obsolete terminology in change notes never pollutes search results. `lore_read` and `lore_query` still return the full content including history
+- **`history_isolation_accuracy` eval metric** — new metric in the eval benchmark verifying that historical terms do not surface entries in search. CI regression detection now covers this metric
+
+### Changed
+
+- **Eval "knowledge_updates" ability redesigned** — replaced the artificial v1/v2 separate-file model with realistic in-place history testing. Positive questions verify updated entries are findable by current content; negative questions verify old vocabulary doesn't leak. Knowledge Updates Recall@5 improved from 0.50 to 1.00, NDCG@5 from 0.48 to 0.88
+
+### Internal
+
+- Exported `HISTORY_MARKER` constant from `scoring.ts` — single source of truth for the `\n## History\n` delimiter, used by both the server write path and the scoring pipeline
+- Added `extractSearchableBody` unit tests covering: no-history passthrough, history stripping, BM25 non-matching on history terms, and BM25 matching on current body terms
+- Removed v2 version-pair generation from eval corpus; history sections now use concatenated opaque tokens to prevent BM25 partial matching on hyphenated compound terms
+
 ## [0.6.0] - 2026-04-11
 
 ### Added
