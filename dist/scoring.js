@@ -104,6 +104,8 @@ export function recencyBonus(updated) {
     // Half-life decay: up to 0.5 for entries updated today, halves every 90 days
     return 0.5 / (1 + ageDays / 90);
 }
+// Raised from 0.2 to 0.5 alongside PPR switch: PPR amplifies seed influence,
+// so a tighter seed set prevents noise propagation through the graph walk.
 export const EXPANSION_THRESHOLD = 0.5;
 export const EXPANSION_DISCOUNT = 0.75;
 export function applyConfidenceAndRecency(results) {
@@ -317,11 +319,6 @@ export function seededPageRank(graph, seeds, alpha = PPR_ALPHA, iterations = PPR
     }
     return result;
 }
-/**
- * Find documents that share domain+tags attributes with seed documents.
- * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
- * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
- */
 export const METADATA_HINT_BOOST = 1.5;
 export const METADATA_HINT_STOPLIST = ['concept', 'entry', 'note', 'guide', 'item', 'record'];
 /**
@@ -375,6 +372,11 @@ export function applyMetadataHintBoost(results, hints) {
         return r;
     });
 }
+/**
+ * Find documents that share domain+tags attributes with seed documents.
+ * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
+ * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
+ */
 export function findSharedAttributeNeighbors(seedPaths, documents, excludePaths, maxResults = SHARED_ATTR_MAX) {
     if (seedPaths.length === 0 || documents.length === 0)
         return [];

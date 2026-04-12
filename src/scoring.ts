@@ -134,6 +134,8 @@ export function recencyBonus(updated: string | undefined): number {
   return 0.5 / (1 + ageDays / 90);
 }
 
+// Raised from 0.2 to 0.5 alongside PPR switch: PPR amplifies seed influence,
+// so a tighter seed set prevents noise propagation through the graph walk.
 export const EXPANSION_THRESHOLD = 0.5;
 export const EXPANSION_DISCOUNT = 0.75;
 
@@ -302,11 +304,6 @@ export function applyLinkBoost(
   });
 }
 
-export interface GraphEdge {
-  source: string; // relative path
-  target: string; // relative path
-}
-
 export function buildWikilinkGraph(
   documents: Array<{ path: string; content: string; title?: string }>,
   titleMap: Map<string, string>,
@@ -416,11 +413,6 @@ export function seededPageRank(
   return result;
 }
 
-/**
- * Find documents that share domain+tags attributes with seed documents.
- * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
- * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
- */
 export const METADATA_HINT_BOOST = 1.5;
 export const METADATA_HINT_STOPLIST = ['concept', 'entry', 'note', 'guide', 'item', 'record'];
 
@@ -490,6 +482,11 @@ export function applyMetadataHintBoost(
   });
 }
 
+/**
+ * Find documents that share domain+tags attributes with seed documents.
+ * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
+ * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
+ */
 export function findSharedAttributeNeighbors(
   seedPaths: string[],
   documents: Array<{ path: string; frontmatter: Frontmatter }>,
