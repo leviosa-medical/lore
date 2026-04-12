@@ -35,6 +35,7 @@ jobs:
 
       - name: Fetch baseline from base branch
         run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
           git show origin/${{ github.event.pull_request.base.ref }}:eval/baseline.json > /tmp/base-baseline.json
 
       - name: Compare against baseline
