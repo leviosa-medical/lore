@@ -104,8 +104,10 @@ export function recencyBonus(updated) {
     // Half-life decay: up to 0.5 for entries updated today, halves every 90 days
     return 0.5 / (1 + ageDays / 90);
 }
-export const EXPANSION_THRESHOLD = 0.2;
-export const EXPANSION_DISCOUNT = 0.85;
+// Raised from 0.2 to 0.5 alongside PPR switch: PPR amplifies seed influence,
+// so a tighter seed set prevents noise propagation through the graph walk.
+export const EXPANSION_THRESHOLD = 0.5;
+export const EXPANSION_DISCOUNT = 0.75;
 export function applyConfidenceAndRecency(results) {
     return results.map((r) => ({
         ...r,
@@ -234,4 +236,203 @@ export function applyLinkBoost(results, inboundCounts, weight = 0.2) {
             score: r.score * (1 + weight * Math.log(1 + count)),
         };
     });
+}
+export function buildWikilinkGraph(documents, titleMap, slugMap) {
+    const graph = new Map();
+    // Initialize all document paths with empty sets (so isolated nodes exist)
+    for (const doc of documents) {
+        graph.set(doc.path, new Set());
+    }
+    for (const doc of documents) {
+        const body = extractBody(doc.content);
+        const linkTexts = extractWikilinks(body);
+        for (const linkText of linkTexts) {
+            // Try to resolve via titleMap (case-insensitive)
+            let resolvedPath = titleMap.get(linkText.toLowerCase());
+            // Fall back to slugMap
+            if (!resolvedPath) {
+                resolvedPath = slugMap.get(slugify(linkText));
+            }
+            if (!resolvedPath)
+                continue;
+            // Add bidirectional edges
+            graph.get(doc.path).add(resolvedPath);
+            // Ensure the target node exists in the graph (may be an isolated node added above)
+            if (!graph.has(resolvedPath)) {
+                graph.set(resolvedPath, new Set());
+            }
+            graph.get(resolvedPath).add(doc.path);
+        }
+    }
+    return graph;
+}
+export const PPR_ALPHA = 0.85;
+export const PPR_ITERATIONS = 20;
+export const PPR_MIN_SCORE = 0.001;
+export const MAX_EXPANSION = 5;
+export const SHARED_ATTR_DISCOUNT = 0.7;
+export const SHARED_ATTR_MAX = 3;
+export function seededPageRank(graph, seeds, alpha = PPR_ALPHA, iterations = PPR_ITERATIONS, minScore = PPR_MIN_SCORE) {
+    if (graph.size === 0 || seeds.size === 0)
+        return new Map();
+    // Normalize seed scores to sum=1
+    let seedTotal = 0;
+    for (const v of seeds.values())
+        seedTotal += v;
+    const seedVec = new Map();
+    for (const [path, v] of seeds) {
+        seedVec.set(path, v / seedTotal);
+    }
+    // Initialize scores from seedVec
+    const scores = new Map(seedVec);
+    // Collect all nodes present as keys in graph
+    const allNodes = Array.from(graph.keys());
+    for (let iter = 0; iter < iterations; iter++) {
+        const nextScores = new Map();
+        // Teleportation term: (1 - alpha) * seed[node]
+        for (const node of allNodes) {
+            nextScores.set(node, (1 - alpha) * (seedVec.get(node) || 0));
+        }
+        // Propagation: distribute alpha * scores[node] / degree to each neighbor
+        for (const node of allNodes) {
+            const nodeScore = scores.get(node) || 0;
+            const neighbors = graph.get(node);
+            if (!neighbors || neighbors.size === 0)
+                continue;
+            const degree = neighbors.size;
+            const contribution = (alpha * nodeScore) / degree;
+            for (const neighbor of neighbors) {
+                nextScores.set(neighbor, (nextScores.get(neighbor) || 0) + contribution);
+            }
+        }
+        // Update scores
+        for (const [node, score] of nextScores) {
+            scores.set(node, score);
+        }
+    }
+    // Return non-seed nodes with score >= minScore
+    const result = new Map();
+    for (const [path, score] of scores) {
+        if (!seeds.has(path) && score >= minScore) {
+            result.set(path, score);
+        }
+    }
+    return result;
+}
+export const METADATA_HINT_BOOST = 1.5;
+export const METADATA_HINT_STOPLIST = ['concept', 'entry', 'note', 'guide', 'item', 'record'];
+/**
+ * Extracts domain and type hints from a query by matching query tokens against
+ * known domain/type values in the corpus. Values in the stoplist or with
+ * length <= 2 are excluded from matching.
+ */
+export function extractQueryMetadataHints(query, documents) {
+    // Collect all unique domain and type values from documents
+    const allDomains = new Set();
+    const allTypes = new Set();
+    for (const doc of documents) {
+        if (doc.frontmatter.domain)
+            allDomains.add(doc.frontmatter.domain);
+        if (doc.frontmatter.type)
+            allTypes.add(doc.frontmatter.type);
+    }
+    // Filter out values with length <= 2 and values in the stoplist
+    const stoplistLower = METADATA_HINT_STOPLIST.map((s) => s.toLowerCase());
+    const filterValue = (value) => {
+        if (value.length <= 2)
+            return false;
+        if (stoplistLower.includes(value.toLowerCase()))
+            return false;
+        return true;
+    };
+    const candidateDomains = [...allDomains].filter(filterValue);
+    const candidateTypes = [...allTypes].filter(filterValue);
+    // Tokenize the query (lowercase, split on whitespace)
+    const queryTokens = query.toLowerCase().split(/\s+/);
+    // Check which domain/type values appear as tokens in the query
+    const matchedDomains = candidateDomains.filter((domain) => queryTokens.includes(domain.toLowerCase()));
+    const matchedTypes = candidateTypes.filter((type) => queryTokens.includes(type.toLowerCase()));
+    return { domains: matchedDomains, types: matchedTypes };
+}
+/**
+ * Applies a score multiplier (METADATA_HINT_BOOST) to results whose domain or
+ * type matches the extracted query hints. Returns results unchanged if hints are empty.
+ */
+export function applyMetadataHintBoost(results, hints) {
+    if (hints.domains.length === 0 && hints.types.length === 0)
+        return results;
+    const domainSet = new Set(hints.domains);
+    const typeSet = new Set(hints.types);
+    return results.map((r) => {
+        const domainMatch = r.frontmatter.domain !== undefined && domainSet.has(r.frontmatter.domain);
+        const typeMatch = r.frontmatter.type !== undefined && typeSet.has(r.frontmatter.type);
+        if (domainMatch || typeMatch) {
+            return { ...r, score: r.score * METADATA_HINT_BOOST };
+        }
+        return r;
+    });
+}
+/**
+ * Find documents that share domain+tags attributes with seed documents.
+ * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
+ * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
+ */
+export function findSharedAttributeNeighbors(seedPaths, documents, excludePaths, maxResults = SHARED_ATTR_MAX) {
+    if (seedPaths.length === 0 || documents.length === 0)
+        return [];
+    const seedPathSet = new Set(seedPaths);
+    // Build seed attribute collections (domain and tags per seed)
+    const seedDomains = new Set();
+    const seedTags = new Set();
+    for (const seedPath of seedPaths) {
+        const seedDoc = documents.find((d) => d.path === seedPath);
+        if (!seedDoc)
+            continue;
+        const fm = seedDoc.frontmatter;
+        if (fm.domain)
+            seedDomains.add(fm.domain);
+        if (fm.tags) {
+            for (const tag of fm.tags)
+                seedTags.add(tag);
+        }
+    }
+    // For each non-excluded, non-seed document, compute shared attributes
+    const candidates = [];
+    for (const doc of documents) {
+        if (seedPathSet.has(doc.path) || excludePaths.has(doc.path))
+            continue;
+        const fm = doc.frontmatter;
+        const sharedAttrs = [];
+        // Check domain match
+        const hasDomainMatch = fm.domain !== undefined && seedDomains.has(fm.domain);
+        if (hasDomainMatch && fm.domain) {
+            sharedAttrs.push(`domain:${fm.domain}`);
+        }
+        // Check tag overlap
+        if (fm.tags) {
+            for (const tag of fm.tags) {
+                if (seedTags.has(tag)) {
+                    sharedAttrs.push(`tag:${tag}`);
+                }
+            }
+        }
+        // Count shared tags (exclude the domain entry from sharedAttrs for tag-count purposes)
+        const sharedTagCount = sharedAttrs.filter((a) => a.startsWith("tag:")).length;
+        // Require: (domain match AND 1+ shared tag) OR (2+ shared tags without domain match)
+        const meetsThreshold = (hasDomainMatch && sharedTagCount >= 1) ||
+            (!hasDomainMatch && sharedTagCount >= 2);
+        if (meetsThreshold) {
+            candidates.push({ path: doc.path, sharedAttributes: sharedAttrs, count: sharedAttrs.length });
+        }
+    }
+    // Sort by shared count descending, then path alphabetically as deterministic tie-breaker
+    candidates.sort((a, b) => {
+        if (b.count !== a.count)
+            return b.count - a.count;
+        return a.path.localeCompare(b.path);
+    });
+    return candidates.slice(0, maxResults).map((c) => ({
+        path: c.path,
+        sharedAttributes: c.sharedAttributes,
+    }));
 }

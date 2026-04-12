@@ -142,6 +142,67 @@ function dateFromOffset(startMs, offsetDays) {
   return d.toISOString().slice(0, 10);
 }
 
+// ---------------------------------------------------------------------------
+// Graph helpers (used after Phase 2 wikilink assignment)
+// ---------------------------------------------------------------------------
+
+// Returns an array of { a, b, c } index triples where A -> B -> C and A does
+// NOT directly link to C (i.e. a 2-hop chain that is not short-circuited).
+// adjacency is undirected; use entries[a].wikilinks to check directed A->C.
+function findTwoHopChains(entries, adjacency, maxChains = 100) {
+  const chains = [];
+  for (let a = 0; a < entries.length && chains.length < maxChains; a++) {
+    for (const b of adjacency[a]) {
+      for (const c of adjacency[b]) {
+        if (c !== a && !entries[a].wikilinks.includes(entries[c].title)) {
+          chains.push({ a, b, c });
+          if (chains.length >= maxChains) break;
+        }
+      }
+      if (chains.length >= maxChains) break;
+    }
+  }
+  return chains;
+}
+
+// Returns a plain object mapping "domain:type" keys to arrays of entry titles.
+// Only includes groups where at least 2 members have no direct wikilink
+// between them (in either direction).
+function buildSharedAttributeGroups(entries, adjacency) {
+  // Group entries by "domain:type"
+  const groups = {};
+  for (let i = 0; i < entries.length; i++) {
+    const key = `${entries[i].domain}:${entries[i].type}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ index: i, title: entries[i].title });
+  }
+
+  const result = {};
+  for (const [key, members] of Object.entries(groups)) {
+    // Find members that have at least one other member with no direct wikilink
+    // in either direction between them.
+    const disconnected = new Set();
+    for (let p = 0; p < members.length; p++) {
+      for (let q = p + 1; q < members.length; q++) {
+        const { index: i, title: ti } = members[p];
+        const { index: j, title: tj } = members[q];
+        const iLinksJ = entries[i].wikilinks.includes(tj);
+        const jLinksI = entries[j].wikilinks.includes(ti);
+        if (!iLinksJ && !jLinksI) {
+          disconnected.add(p);
+          disconnected.add(q);
+        }
+      }
+    }
+    if (disconnected.size >= 2) {
+      result[key] = members
+        .filter((_, idx) => disconnected.has(idx))
+        .map((m) => m.title);
+    }
+  }
+  return result;
+}
+
 // BFS connectivity check — returns array of connected component arrays (by index).
 function findComponents(n, adjacency) {
   const visited = new Array(n).fill(false);
@@ -314,6 +375,10 @@ export async function generateCorpus(tier, outputDir) {
     }
   }
 
+  // Compute graph analysis structures for use by the question generator
+  const twoHopChains = findTwoHopChains(entries, adjacency);
+  const sharedAttributeGroups = buildSharedAttributeGroups(entries, adjacency);
+
   // -------------------------------------------------------------------------
   // Phase 3: Build body text for each entry
   // -------------------------------------------------------------------------
@@ -438,6 +503,14 @@ export async function generateCorpus(tier, outputDir) {
 
     manifest[entry.title] = manifestEntry;
   }
+
+  // Attach graph analysis fields to manifest (index triples converted to title triples)
+  manifest.__twoHopChains = twoHopChains.map((c) => ({
+    a: entries[c.a].title,
+    b: entries[c.b].title,
+    c: entries[c.c].title,
+  }));
+  manifest.__sharedAttributeGroups = sharedAttributeGroups;
 
   // -------------------------------------------------------------------------
   // Phase 6: Write index.md

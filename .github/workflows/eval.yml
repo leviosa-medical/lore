@@ -16,6 +16,8 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -33,10 +35,25 @@ jobs:
         continue-on-error: true
         run: node eval/run.js --layer all --output eval/results/
 
+      - name: Check if eval questions changed
+        id: eval-changed
+        run: |
+          CHANGED=$(git diff origin/${{ github.event.pull_request.base.ref }}...HEAD --name-only -- eval/generate/)
+          if [ -n "$CHANGED" ]; then
+            echo "eval_questions_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Eval question generators changed — using branch baseline for comparison."
+          else
+            echo "eval_questions_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Fetch baseline from base branch
         run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
-          git show origin/${{ github.event.pull_request.base.ref }}:eval/baseline.json > /tmp/base-baseline.json
+          if [ "${{ steps.eval-changed.outputs.eval_questions_changed }}" = "true" ]; then
+            echo "Using branch baseline (eval questions changed, base branch baseline is incompatible)."
+            cp eval/baseline.json /tmp/base-baseline.json
+          else
+            git show origin/${{ github.event.pull_request.base.ref }}:eval/baseline.json > /tmp/base-baseline.json
+          fi
 
       - name: Compare against baseline
         id: compare

@@ -9,6 +9,12 @@ import {
   decomposeQuery,
   extractSearchableBody,
   HISTORY_MARKER,
+  buildWikilinkGraph,
+  seededPageRank,
+  PPR_MIN_SCORE,
+  buildLookupMaps,
+  findSharedAttributeNeighbors,
+  extractQueryMetadataHints,
 } from "../../dist/scoring.js";
 
 import { recallAtK, ndcgAtK } from "../scoring/metrics.js";
@@ -607,6 +613,395 @@ function testExtractSearchableBody() {
 }
 
 /**
+ * buildWikilinkGraph: assert bidirectional graph construction from wikilinked documents.
+ */
+function testBuildWikilinkGraph() {
+  const id = "unit-build-wikilink-graph";
+  const ability = "wikilink_graph";
+  try {
+    const documents = [
+      {
+        path: "a.md",
+        title: "A Title",
+        content: "---\ntitle: A Title\ntype: concept\n---\n\nSee [[B Title]] for details.",
+      },
+      {
+        path: "b.md",
+        title: "B Title",
+        content: "---\ntitle: B Title\ntype: concept\n---\n\nSee [[C Title]] for details.",
+      },
+      {
+        path: "c.md",
+        title: "C Title",
+        content: "---\ntitle: C Title\ntype: concept\n---\n\nNo links here.",
+      },
+    ];
+
+    const { titleMap, slugMap } = buildLookupMaps(documents);
+    const graph = buildWikilinkGraph(documents, titleMap, slugMap);
+
+    const checks = [];
+
+    // Graph has 3 keys (one per document)
+    checks.push({
+      label: "graph has 3 keys",
+      ok: graph.size === 3,
+      got: `${graph.size}`,
+    });
+
+    // A's neighbors include B (forward link A -> B)
+    checks.push({
+      label: "A's neighbors include B (forward link)",
+      ok: graph.get("a.md")?.has("b.md") === true,
+      got: JSON.stringify([...(graph.get("a.md") || [])]),
+    });
+
+    // B's neighbors include A (reverse link A -> B creates B -> A)
+    checks.push({
+      label: "B's neighbors include A (reverse link from A->B)",
+      ok: graph.get("b.md")?.has("a.md") === true,
+      got: JSON.stringify([...(graph.get("b.md") || [])]),
+    });
+
+    // B's neighbors include C (forward link B -> C)
+    checks.push({
+      label: "B's neighbors include C (forward link)",
+      ok: graph.get("b.md")?.has("c.md") === true,
+      got: JSON.stringify([...(graph.get("b.md") || [])]),
+    });
+
+    // C's neighbors include B (reverse link B -> C creates C -> B)
+    checks.push({
+      label: "C's neighbors include B (reverse link from B->C)",
+      ok: graph.get("c.md")?.has("b.md") === true,
+      got: JSON.stringify([...(graph.get("c.md") || [])]),
+    });
+
+    // A's neighbors do NOT include C (no direct link A -> C)
+    checks.push({
+      label: "A's neighbors do NOT include C",
+      ok: graph.get("a.md")?.has("c.md") === false,
+      got: JSON.stringify([...(graph.get("a.md") || [])]),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.label} (got ${c.got})`).join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} wikilink graph assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
+ * seededPageRank: assert PPR converges, score decays with distance, seeds are excluded,
+ * and disconnected components don't cross-contaminate.
+ */
+function testSeededPageRank() {
+  const id = "unit-seeded-page-rank";
+  const ability = "seeded_page_rank";
+  try {
+    const checks = [];
+
+    // Build a linear chain: A-B-C-D (bidirectional)
+    const graph = new Map([
+      ["a.md", new Set(["b.md"])],
+      ["b.md", new Set(["a.md", "c.md"])],
+      ["c.md", new Set(["b.md", "d.md"])],
+      ["d.md", new Set(["c.md"])],
+    ]);
+
+    const seeds = new Map([["a.md", 1.0]]);
+    const result = seededPageRank(graph, seeds);
+
+    // Returned map does NOT contain A (seed excluded)
+    checks.push({
+      label: "result does NOT contain seed A",
+      ok: !result.has("a.md"),
+      got: `has a.md: ${result.has("a.md")}`,
+    });
+
+    // B has higher score than C (closer to seed)
+    const scoreB = result.get("b.md") ?? 0;
+    const scoreC = result.get("c.md") ?? 0;
+    const scoreD = result.get("d.md") ?? 0;
+
+    checks.push({
+      label: "B has higher score than C (distance decay)",
+      ok: scoreB > scoreC,
+      got: `B=${scoreB.toFixed(6)}, C=${scoreC.toFixed(6)}`,
+    });
+
+    checks.push({
+      label: "C has higher score than D (distance decay)",
+      ok: scoreC > scoreD,
+      got: `C=${scoreC.toFixed(6)}, D=${scoreD.toFixed(6)}`,
+    });
+
+    // All returned scores are >= PPR_MIN_SCORE
+    const allAboveMin = [...result.values()].every((s) => s >= PPR_MIN_SCORE);
+    checks.push({
+      label: "all returned scores >= PPR_MIN_SCORE",
+      ok: allAboveMin,
+      got: `scores: ${[...result.entries()].map(([k, v]) => `${k}=${v.toFixed(6)}`).join(", ")}`,
+    });
+
+    // Empty graph with seed returns empty map
+    const emptyGraph = new Map();
+    const emptyResult = seededPageRank(emptyGraph, new Map([["a.md", 1.0]]));
+    checks.push({
+      label: "empty graph with seed returns empty map",
+      ok: emptyResult.size === 0,
+      got: `size=${emptyResult.size}`,
+    });
+
+    // Disconnected component: seed in one component does not score nodes in another
+    const disconnectedGraph = new Map([
+      ["a.md", new Set(["b.md"])],
+      ["b.md", new Set(["a.md"])],
+      ["x.md", new Set(["y.md"])],
+      ["y.md", new Set(["x.md"])],
+    ]);
+    const disconnectedResult = seededPageRank(disconnectedGraph, new Map([["a.md", 1.0]]));
+    checks.push({
+      label: "disconnected component x.md not reached from seed a.md",
+      ok: !disconnectedResult.has("x.md"),
+      got: `has x.md: ${disconnectedResult.has("x.md")}, scores: ${[...disconnectedResult.entries()].map(([k, v]) => `${k}=${v.toFixed(6)}`).join(", ")}`,
+    });
+    checks.push({
+      label: "disconnected component y.md not reached from seed a.md",
+      ok: !disconnectedResult.has("y.md"),
+      got: `has y.md: ${disconnectedResult.has("y.md")}`,
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.label} (got ${c.got})`).join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} seededPageRank assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
+ * findSharedAttributeNeighbors: assert that documents sharing domain+tags with seed
+ * are returned, ranked by attribute overlap, and documents with only 1 shared tag
+ * (no domain match) are excluded.
+ *
+ * Corpus:
+ *   A: domain=billing, tags=[billing, concept]  <- seed
+ *   B: domain=billing, tags=[billing, rule]     <- same domain + 1 shared tag ("billing") -> included
+ *   C: domain=tenants, tags=[tenants, concept]  <- different domain + 1 shared tag ("concept") -> excluded
+ *   D: domain=billing, tags=[billing, concept]  <- same domain + 2 shared tags -> included, ranks above B
+ */
+function testFindSharedAttributeNeighbors() {
+  const id = "unit-shared-attr-neighbors";
+  const ability = "shared_attr_traversal";
+  try {
+    const documents = [
+      {
+        path: "billing/a.md",
+        frontmatter: { title: "Entry A", domain: "billing", tags: ["billing", "concept"] },
+      },
+      {
+        path: "billing/b.md",
+        frontmatter: { title: "Entry B", domain: "billing", tags: ["billing", "rule"] },
+      },
+      {
+        path: "tenants/c.md",
+        frontmatter: { title: "Entry C", domain: "tenants", tags: ["tenants", "concept"] },
+      },
+      {
+        path: "billing/d.md",
+        frontmatter: { title: "Entry D", domain: "billing", tags: ["billing", "concept"] },
+      },
+    ];
+
+    const seedPaths = ["billing/a.md"];
+    const excludePaths = new Set();
+    const neighbors = findSharedAttributeNeighbors(seedPaths, documents, excludePaths);
+
+    const checks = [];
+
+    // D should be returned (same domain "billing" + shared tags "billing" and "concept" = 3 attrs)
+    const dNeighbor = neighbors.find((n) => n.path === "billing/d.md");
+    checks.push({
+      label: "D is returned (same domain + 2 shared tags)",
+      ok: dNeighbor !== undefined,
+      got: JSON.stringify(neighbors.map((n) => n.path)),
+    });
+
+    // B should be returned (same domain "billing" + shared tag "billing" = 2 attrs)
+    const bNeighbor = neighbors.find((n) => n.path === "billing/b.md");
+    checks.push({
+      label: "B is returned (same domain + 1 shared tag)",
+      ok: bNeighbor !== undefined,
+      got: JSON.stringify(neighbors.map((n) => n.path)),
+    });
+
+    // C should NOT be returned (different domain, only 1 shared tag "concept" — fails threshold)
+    const cNeighbor = neighbors.find((n) => n.path === "tenants/c.md");
+    checks.push({
+      label: "C is NOT returned (different domain, only 1 shared tag)",
+      ok: cNeighbor === undefined,
+      got: JSON.stringify(neighbors.map((n) => n.path)),
+    });
+
+    // D should rank above B (more shared attributes: 3 vs 2)
+    const dIndex = neighbors.findIndex((n) => n.path === "billing/d.md");
+    const bIndex = neighbors.findIndex((n) => n.path === "billing/b.md");
+    checks.push({
+      label: "D ranks above B (more shared attributes)",
+      ok: dIndex !== -1 && bIndex !== -1 && dIndex < bIndex,
+      got: `dIndex=${dIndex}, bIndex=${bIndex}`,
+    });
+
+    // sharedAttributes array is populated for D (should include domain and tag entries)
+    checks.push({
+      label: "D has non-empty sharedAttributes array",
+      ok: dNeighbor !== undefined && dNeighbor.sharedAttributes.length > 0,
+      got: JSON.stringify(dNeighbor?.sharedAttributes),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.label} (got ${c.got})`).join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} findSharedAttributeNeighbors assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
+ * extractQueryMetadataHints: assert that domain/type hints are extracted from
+ * query tokens, stoplisted terms are excluded, and short values (length <= 2) are
+ * excluded.
+ *
+ * Corpus:
+ *   domains: ["billing", "tenants", "ab"]  (ab has length 2 -> excluded)
+ *   types:   ["concept", "rule"]           (concept is in stoplist -> excluded)
+ */
+function testExtractQueryMetadataHints() {
+  const id = "unit-extract-query-metadata-hints";
+  const ability = "metadata_hint_boost";
+  try {
+    const documents = [
+      {
+        frontmatter: { title: "Entry A", domain: "billing", type: "concept" },
+      },
+      {
+        frontmatter: { title: "Entry B", domain: "tenants", type: "rule" },
+      },
+      {
+        frontmatter: { title: "Entry C", domain: "ab", type: "concept" },
+      },
+    ];
+
+    const checks = [];
+
+    // Test 1: query "billing rules" — "billing" matches domain, "rule" does not match
+    // type "rule" because "rules" != "rule" (exact token match against frontmatter value)
+    const result1 = extractQueryMetadataHints("billing rules", documents);
+    checks.push({
+      label: 'query "billing rules": domains=["billing"]',
+      ok: result1.domains.length === 1 && result1.domains.includes("billing"),
+      got: JSON.stringify(result1.domains),
+    });
+    checks.push({
+      label: 'query "billing rules": types=[] ("rules" does not match frontmatter value "rule")',
+      ok: result1.types.length === 0,
+      got: JSON.stringify(result1.types),
+    });
+
+    // Test 2: query "concept overview" — "concept" is in stoplist -> no type match
+    const result2 = extractQueryMetadataHints("concept overview", documents);
+    checks.push({
+      label: 'query "concept overview": domains=[] (no domain token matches)',
+      ok: result2.domains.length === 0,
+      got: JSON.stringify(result2.domains),
+    });
+    checks.push({
+      label: 'query "concept overview": types=[] (concept is stoplisted)',
+      ok: result2.types.length === 0,
+      got: JSON.stringify(result2.types),
+    });
+
+    // Test 3: query "ab cd" — "ab" is a domain but length <= 2, excluded
+    const result3 = extractQueryMetadataHints("ab cd", documents);
+    checks.push({
+      label: 'query "ab cd": domains=[] (ab has length <= 2, excluded)',
+      ok: result3.domains.length === 0,
+      got: JSON.stringify(result3.domains),
+    });
+
+    // Test 4: query "no match here" — no domain or type tokens match
+    const result4 = extractQueryMetadataHints("no match here", documents);
+    checks.push({
+      label: 'query "no match here": domains=[]',
+      ok: result4.domains.length === 0,
+      got: JSON.stringify(result4.domains),
+    });
+    checks.push({
+      label: 'query "no match here": types=[]',
+      ok: result4.types.length === 0,
+      got: JSON.stringify(result4.types),
+    });
+
+    // Test 5: query "tenants rule" — "tenants" matches domain, "rule" matches type
+    const result5 = extractQueryMetadataHints("tenants rule", documents);
+    checks.push({
+      label: 'query "tenants rule": domains=["tenants"]',
+      ok: result5.domains.length === 1 && result5.domains.includes("tenants"),
+      got: JSON.stringify(result5.domains),
+    });
+    checks.push({
+      label: 'query "tenants rule": types=["rule"]',
+      ok: result5.types.length === 1 && result5.types.includes("rule"),
+      got: JSON.stringify(result5.types),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.label} (got ${c.got})`).join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} extractQueryMetadataHints assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
  * Run all unit tests and return results array.
  * Each result: { id, ability, passed, details }
  */
@@ -620,6 +1015,10 @@ export async function runUnitLayer() {
     testDecomposeQuery(),
     testMetadataWeighting(),
     testExtractSearchableBody(),
+    testBuildWikilinkGraph(),
+    testSeededPageRank(),
+    testFindSharedAttributeNeighbors(),
+    testExtractQueryMetadataHints(),
   ];
   return results;
 }

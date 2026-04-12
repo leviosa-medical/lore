@@ -30204,8 +30204,8 @@ function recencyBonus(updated) {
   const ageDays = Math.max(0, (Date.now() - ts) / 864e5);
   return 0.5 / (1 + ageDays / 90);
 }
-var EXPANSION_THRESHOLD = 0.2;
-var EXPANSION_DISCOUNT = 0.85;
+var EXPANSION_THRESHOLD = 0.5;
+var EXPANSION_DISCOUNT = 0.75;
 function applyConfidenceAndRecency(results) {
   return results.map((r) => ({
     ...r,
@@ -30324,6 +30324,167 @@ function applyLinkBoost(results, inboundCounts, weight = 0.2) {
       score: r.score * (1 + weight * Math.log(1 + count))
     };
   });
+}
+function buildWikilinkGraph(documents, titleMap, slugMap) {
+  const graph = /* @__PURE__ */ new Map();
+  for (const doc of documents) {
+    graph.set(doc.path, /* @__PURE__ */ new Set());
+  }
+  for (const doc of documents) {
+    const body = extractBody(doc.content);
+    const linkTexts = extractWikilinks(body);
+    for (const linkText of linkTexts) {
+      let resolvedPath = titleMap.get(linkText.toLowerCase());
+      if (!resolvedPath) {
+        resolvedPath = slugMap.get(slugify2(linkText));
+      }
+      if (!resolvedPath)
+        continue;
+      graph.get(doc.path).add(resolvedPath);
+      if (!graph.has(resolvedPath)) {
+        graph.set(resolvedPath, /* @__PURE__ */ new Set());
+      }
+      graph.get(resolvedPath).add(doc.path);
+    }
+  }
+  return graph;
+}
+var PPR_ALPHA = 0.85;
+var PPR_ITERATIONS = 20;
+var PPR_MIN_SCORE = 1e-3;
+var MAX_EXPANSION = 5;
+var SHARED_ATTR_DISCOUNT = 0.7;
+var SHARED_ATTR_MAX = 3;
+function seededPageRank(graph, seeds, alpha = PPR_ALPHA, iterations = PPR_ITERATIONS, minScore = PPR_MIN_SCORE) {
+  if (graph.size === 0 || seeds.size === 0)
+    return /* @__PURE__ */ new Map();
+  let seedTotal = 0;
+  for (const v of seeds.values())
+    seedTotal += v;
+  const seedVec = /* @__PURE__ */ new Map();
+  for (const [path2, v] of seeds) {
+    seedVec.set(path2, v / seedTotal);
+  }
+  const scores = new Map(seedVec);
+  const allNodes = Array.from(graph.keys());
+  for (let iter = 0; iter < iterations; iter++) {
+    const nextScores = /* @__PURE__ */ new Map();
+    for (const node of allNodes) {
+      nextScores.set(node, (1 - alpha) * (seedVec.get(node) || 0));
+    }
+    for (const node of allNodes) {
+      const nodeScore = scores.get(node) || 0;
+      const neighbors = graph.get(node);
+      if (!neighbors || neighbors.size === 0)
+        continue;
+      const degree = neighbors.size;
+      const contribution = alpha * nodeScore / degree;
+      for (const neighbor of neighbors) {
+        nextScores.set(neighbor, (nextScores.get(neighbor) || 0) + contribution);
+      }
+    }
+    for (const [node, score] of nextScores) {
+      scores.set(node, score);
+    }
+  }
+  const result = /* @__PURE__ */ new Map();
+  for (const [path2, score] of scores) {
+    if (!seeds.has(path2) && score >= minScore) {
+      result.set(path2, score);
+    }
+  }
+  return result;
+}
+var METADATA_HINT_BOOST = 1.5;
+var METADATA_HINT_STOPLIST = ["concept", "entry", "note", "guide", "item", "record"];
+function extractQueryMetadataHints(query, documents) {
+  const allDomains = /* @__PURE__ */ new Set();
+  const allTypes = /* @__PURE__ */ new Set();
+  for (const doc of documents) {
+    if (doc.frontmatter.domain)
+      allDomains.add(doc.frontmatter.domain);
+    if (doc.frontmatter.type)
+      allTypes.add(doc.frontmatter.type);
+  }
+  const stoplistLower = METADATA_HINT_STOPLIST.map((s) => s.toLowerCase());
+  const filterValue = (value) => {
+    if (value.length <= 2)
+      return false;
+    if (stoplistLower.includes(value.toLowerCase()))
+      return false;
+    return true;
+  };
+  const candidateDomains = [...allDomains].filter(filterValue);
+  const candidateTypes = [...allTypes].filter(filterValue);
+  const queryTokens = query.toLowerCase().split(/\s+/);
+  const matchedDomains = candidateDomains.filter((domain2) => queryTokens.includes(domain2.toLowerCase()));
+  const matchedTypes = candidateTypes.filter((type) => queryTokens.includes(type.toLowerCase()));
+  return { domains: matchedDomains, types: matchedTypes };
+}
+function applyMetadataHintBoost(results, hints) {
+  if (hints.domains.length === 0 && hints.types.length === 0)
+    return results;
+  const domainSet = new Set(hints.domains);
+  const typeSet = new Set(hints.types);
+  return results.map((r) => {
+    const domainMatch = r.frontmatter.domain !== void 0 && domainSet.has(r.frontmatter.domain);
+    const typeMatch = r.frontmatter.type !== void 0 && typeSet.has(r.frontmatter.type);
+    if (domainMatch || typeMatch) {
+      return { ...r, score: r.score * METADATA_HINT_BOOST };
+    }
+    return r;
+  });
+}
+function findSharedAttributeNeighbors(seedPaths, documents, excludePaths, maxResults = SHARED_ATTR_MAX) {
+  if (seedPaths.length === 0 || documents.length === 0)
+    return [];
+  const seedPathSet = new Set(seedPaths);
+  const seedDomains = /* @__PURE__ */ new Set();
+  const seedTags = /* @__PURE__ */ new Set();
+  for (const seedPath of seedPaths) {
+    const seedDoc = documents.find((d) => d.path === seedPath);
+    if (!seedDoc)
+      continue;
+    const fm = seedDoc.frontmatter;
+    if (fm.domain)
+      seedDomains.add(fm.domain);
+    if (fm.tags) {
+      for (const tag of fm.tags)
+        seedTags.add(tag);
+    }
+  }
+  const candidates = [];
+  for (const doc of documents) {
+    if (seedPathSet.has(doc.path) || excludePaths.has(doc.path))
+      continue;
+    const fm = doc.frontmatter;
+    const sharedAttrs = [];
+    const hasDomainMatch = fm.domain !== void 0 && seedDomains.has(fm.domain);
+    if (hasDomainMatch && fm.domain) {
+      sharedAttrs.push(`domain:${fm.domain}`);
+    }
+    if (fm.tags) {
+      for (const tag of fm.tags) {
+        if (seedTags.has(tag)) {
+          sharedAttrs.push(`tag:${tag}`);
+        }
+      }
+    }
+    const sharedTagCount = sharedAttrs.filter((a) => a.startsWith("tag:")).length;
+    const meetsThreshold = hasDomainMatch && sharedTagCount >= 1 || !hasDomainMatch && sharedTagCount >= 2;
+    if (meetsThreshold) {
+      candidates.push({ path: doc.path, sharedAttributes: sharedAttrs, count: sharedAttrs.length });
+    }
+  }
+  candidates.sort((a, b) => {
+    if (b.count !== a.count)
+      return b.count - a.count;
+    return a.path.localeCompare(b.path);
+  });
+  return candidates.slice(0, maxResults).map((c) => ({
+    path: c.path,
+    sharedAttributes: c.sharedAttributes
+  }));
 }
 
 // dist/server.js
@@ -30808,63 +30969,48 @@ server.registerTool("lore_query", {
   } else {
     scored = computeBM25Scores(question, documents);
   }
+  const metadataHints = extractQueryMetadataHints(question, documents);
+  scored = applyMetadataHintBoost(scored, metadataHints);
   const inboundCounts = buildInboundCounts(documents.map((d) => ({ title: d.title, content: d.content })));
   scored = applyLinkBoost(scored, inboundCounts);
   const results = applyConfidenceAndRecency(scored);
   results.sort((a, b) => b.score - a.score);
   const maxScore = results.length > 0 ? results[0].score : 0;
   const qualifyingResults = maxScore > 0 ? results.filter((r) => r.score / maxScore >= EXPANSION_THRESHOLD) : [];
-  let finalResults = [];
-  const expansionSources = qualifyingResults.slice(0, 3);
-  if (expansionSources.length > 0) {
-    const { titleMap, slugMap } = buildLookupMaps(documents.map((d) => ({ path: d.path, title: d.title })));
-    const existingPaths = new Set(results.map((r) => r.path));
-    const expansionCandidates = [];
-    for (const result of expansionSources) {
-      const body = extractBody(result.content);
-      const links = extractWikilinks(body);
-      for (const linkText of links) {
-        const resolved = await resolveWikilink(linkText, titleMap, slugMap);
-        if (!resolved)
-          continue;
-        if (!existingPaths.has(resolved)) {
-          expansionCandidates.push({ path: resolved, parentScore: result.score });
-        }
-      }
-    }
-    const seen = /* @__PURE__ */ new Set();
-    const uniqueCandidates = expansionCandidates.filter((c) => {
-      if (seen.has(c.path))
-        return false;
-      seen.add(c.path);
-      return true;
+  const { titleMap, slugMap } = buildLookupMaps(documents.map((d) => ({ path: d.path, title: d.title })));
+  const wikilinkGraph = buildWikilinkGraph(documents.map((d) => ({ path: d.path, content: d.content })), titleMap, slugMap);
+  const seeds = /* @__PURE__ */ new Map();
+  for (const r of qualifyingResults) {
+    seeds.set(r.path, r.score);
+  }
+  const pprScores = seededPageRank(wikilinkGraph, seeds);
+  const existingPaths = new Set(results.map((r) => r.path));
+  const expansionCandidates = Array.from(pprScores.entries()).filter(([p]) => !existingPaths.has(p) && !seeds.has(p)).sort((a, b) => b[1] - a[1]).slice(0, MAX_EXPANSION);
+  const expansionResults = [];
+  for (const [candidatePath] of expansionCandidates) {
+    const doc = documents.find((d) => d.path === candidatePath);
+    if (!doc)
+      continue;
+    expansionResults.push({
+      ...doc,
+      score: maxScore * EXPANSION_DISCOUNT
     });
-    uniqueCandidates.sort((a, b) => b.parentScore - a.parentScore);
-    let expansionCount = 0;
-    for (const candidate of uniqueCandidates) {
-      if (expansionCount >= 3)
-        break;
-      const doc = documents.find((d) => d.path === candidate.path);
-      if (!doc)
-        continue;
-      finalResults.push({
-        ...doc,
-        score: candidate.parentScore * EXPANSION_DISCOUNT
-      });
-      expansionCount++;
-    }
   }
-  if (finalResults.length === 0) {
-    finalResults = [...results];
-  } else {
-    const expansionPaths = new Set(finalResults.map((r) => r.path));
-    const merged = [
-      ...results.filter((r) => !expansionPaths.has(r.path)),
-      ...finalResults
-    ];
-    merged.sort((a, b) => b.score - a.score);
-    finalResults = merged;
+  const afterPPRPaths = /* @__PURE__ */ new Set([...results.map((r) => r.path), ...expansionResults.map((r) => r.path)]);
+  const sharedAttrNeighbors = findSharedAttributeNeighbors(qualifyingResults.map((r) => r.path), documents.map((d) => ({ path: d.path, frontmatter: d.frontmatter })), afterPPRPaths, SHARED_ATTR_MAX);
+  const parentScore = qualifyingResults.length > 0 ? qualifyingResults[0].score : 0;
+  const sharedAttrResults = [];
+  for (const neighbor of sharedAttrNeighbors) {
+    const doc = documents.find((d) => d.path === neighbor.path);
+    if (!doc)
+      continue;
+    sharedAttrResults.push({
+      ...doc,
+      score: SHARED_ATTR_DISCOUNT * parentScore
+    });
   }
+  let finalResults = [...results, ...expansionResults, ...sharedAttrResults];
+  finalResults.sort((a, b) => b.score - a.score);
   const topResults = finalResults.slice(0, 10);
   if (topResults.length === 0) {
     return {

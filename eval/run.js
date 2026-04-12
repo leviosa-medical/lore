@@ -32,13 +32,16 @@ function parseArgs(argv) {
     threshold: null,
     maxLatencyMs: 200,
     output: "eval/results/",
+    verbose: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     const next = argv[i + 1];
 
-    if (arg === "--tier") {
+    if (arg === "--verbose") {
+      args.verbose = true;
+    } else if (arg === "--tier") {
       if (!["small", "medium", "large"].includes(next)) {
         console.error(`Invalid --tier value: ${next}. Use small, medium, or large.`);
         process.exit(2);
@@ -195,6 +198,26 @@ function aggregateIntegration(integrationResults) {
         latency_p95_ms: Math.round(stats.p95),
         latency_max_ms: Math.round(stats.max),
       };
+
+      // Compute per-sub-type recall@5 for multi_hop
+      if (ability === "multi_hop") {
+        const bySubType = {};
+        for (const r of results) {
+          const st = r.subType || "unknown";
+          if (!bySubType[st]) bySubType[st] = [];
+          bySubType[st].push(r);
+        }
+        const sub_types = {};
+        for (const [st, stResults] of Object.entries(bySubType)) {
+          const meanR5 =
+            stResults.reduce(
+              (sum, r) => sum + recallAtK(r.retrieved_titles, r.expected_titles, 5),
+              0
+            ) / stResults.length;
+          sub_types[st] = meanR5;
+        }
+        abilityMetrics[ability].sub_types = sub_types;
+      }
     }
   }
 
@@ -233,7 +256,7 @@ function fmtCell(val, width) {
   return String(val).padStart(width);
 }
 
-function printTable(abilityMetrics, includeLatency, integrationResults) {
+function printTable(abilityMetrics, includeLatency, integrationResults, verbose = false) {
   // Header
   let header = "Ability".padEnd(COL_ABILITY);
   header += fmtCell("Recall@1",  COL_R1);
@@ -288,6 +311,25 @@ function printTable(abilityMetrics, includeLatency, integrationResults) {
         row += fmtCell(m.latency_p95_ms, COL_P95);
       }
       console.log(row);
+
+      // Print sub-type breakdown for multi_hop when --verbose is set
+      if (ability === "multi_hop" && verbose && m.sub_types) {
+        const SUB_TYPE_ORDER = ["forward_1hop", "reverse_1hop", "two_hop_chain", "shared_attribute"];
+        for (const st of SUB_TYPE_ORDER) {
+          if (m.sub_types[st] === undefined) continue;
+          let stRow = ("  " + st).padEnd(COL_ABILITY);
+          stRow += fmtCell("-",              COL_R1);
+          stRow += fmtCell(fmt2(m.sub_types[st]), COL_R5);
+          stRow += fmtCell("-",              COL_R10);
+          stRow += fmtCell("-",              COL_N5);
+          stRow += fmtCell("-",              COL_N10);
+          if (includeLatency) {
+            stRow += fmtCell("-", COL_P50);
+            stRow += fmtCell("-", COL_P95);
+          }
+          console.log(stRow);
+        }
+      }
     }
   }
 
@@ -397,6 +439,9 @@ async function writeReport(
       };
       if (m.history_isolation_accuracy !== undefined) {
         abilities[ability].history_isolation_accuracy = m.history_isolation_accuracy;
+      }
+      if (m.sub_types) {
+        abilities[ability].sub_types = m.sub_types;
       }
     }
   }
@@ -516,7 +561,7 @@ async function main() {
     // Step 6: Print table
     const includeLatency = args.layer !== "unit";
     if (Object.keys(abilityMetrics).length > 0) {
-      printTable(abilityMetrics, includeLatency, integrationResults);
+      printTable(abilityMetrics, includeLatency, integrationResults, args.verbose);
     } else if (args.layer === "unit" && unitResults) {
       // Print unit test summary
       console.log("\nUnit Test Results:");

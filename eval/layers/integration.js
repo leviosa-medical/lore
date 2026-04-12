@@ -234,7 +234,7 @@ export async function runIntegrationLayer(questions, lorePath) {
         );
       }
 
-      results.push({
+      const result = {
         id: question.id,
         ability: question.ability,
         query: question.query,
@@ -245,7 +245,11 @@ export async function runIntegrationLayer(questions, lorePath) {
         abstentionAcc,
         latencyMs,
         status,
-      });
+      };
+      if (question.subType !== undefined) {
+        result.subType = question.subType;
+      }
+      results.push(result);
     }
   } finally {
     await client.close().catch(() => {
