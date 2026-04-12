@@ -30395,6 +30395,46 @@ function seededPageRank(graph, seeds, alpha = PPR_ALPHA, iterations = PPR_ITERAT
   }
   return result;
 }
+var METADATA_HINT_BOOST = 1.5;
+var METADATA_HINT_STOPLIST = ["concept", "entry", "note", "guide", "item", "record"];
+function extractQueryMetadataHints(query, documents) {
+  const allDomains = /* @__PURE__ */ new Set();
+  const allTypes = /* @__PURE__ */ new Set();
+  for (const doc of documents) {
+    if (doc.frontmatter.domain)
+      allDomains.add(doc.frontmatter.domain);
+    if (doc.frontmatter.type)
+      allTypes.add(doc.frontmatter.type);
+  }
+  const stoplistLower = METADATA_HINT_STOPLIST.map((s) => s.toLowerCase());
+  const filterValue = (value) => {
+    if (value.length <= 2)
+      return false;
+    if (stoplistLower.includes(value.toLowerCase()))
+      return false;
+    return true;
+  };
+  const candidateDomains = [...allDomains].filter(filterValue);
+  const candidateTypes = [...allTypes].filter(filterValue);
+  const queryTokens = query.toLowerCase().split(/\s+/);
+  const matchedDomains = candidateDomains.filter((domain2) => queryTokens.includes(domain2.toLowerCase()));
+  const matchedTypes = candidateTypes.filter((type) => queryTokens.includes(type.toLowerCase()));
+  return { domains: matchedDomains, types: matchedTypes };
+}
+function applyMetadataHintBoost(results, hints) {
+  if (hints.domains.length === 0 && hints.types.length === 0)
+    return results;
+  const domainSet = new Set(hints.domains);
+  const typeSet = new Set(hints.types);
+  return results.map((r) => {
+    const domainMatch = r.frontmatter.domain !== void 0 && domainSet.has(r.frontmatter.domain);
+    const typeMatch = r.frontmatter.type !== void 0 && typeSet.has(r.frontmatter.type);
+    if (domainMatch || typeMatch) {
+      return { ...r, score: r.score * METADATA_HINT_BOOST };
+    }
+    return r;
+  });
+}
 function findSharedAttributeNeighbors(seedPaths, documents, excludePaths, maxResults = SHARED_ATTR_MAX) {
   if (seedPaths.length === 0 || documents.length === 0)
     return [];
@@ -30929,6 +30969,8 @@ server.registerTool("lore_query", {
   } else {
     scored = computeBM25Scores(question, documents);
   }
+  const metadataHints = extractQueryMetadataHints(question, documents);
+  scored = applyMetadataHintBoost(scored, metadataHints);
   const inboundCounts = buildInboundCounts(documents.map((d) => ({ title: d.title, content: d.content })));
   scored = applyLinkBoost(scored, inboundCounts);
   const results = applyConfidenceAndRecency(scored);

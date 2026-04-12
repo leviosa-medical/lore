@@ -20,6 +20,8 @@ import {
   findSharedAttributeNeighbors,
   SHARED_ATTR_DISCOUNT,
   SHARED_ATTR_MAX,
+  extractQueryMetadataHints,
+  applyMetadataHintBoost,
   parseFrontmatter,
   buildPage,
   extractBody,
@@ -701,6 +703,10 @@ server.registerTool(
     } else {
       scored = computeBM25Scores(question, documents);
     }
+
+    // Step 2.5: Metadata hint boost (applied after BM25, before link boost)
+    const metadataHints = extractQueryMetadataHints(question, documents);
+    scored = applyMetadataHintBoost(scored, metadataHints);
 
     // Step 3: Inbound link boost
     const inboundCounts = buildInboundCounts(

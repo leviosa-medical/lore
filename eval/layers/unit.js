@@ -14,6 +14,7 @@ import {
   PPR_MIN_SCORE,
   buildLookupMaps,
   findSharedAttributeNeighbors,
+  extractQueryMetadataHints,
 } from "../../dist/scoring.js";
 
 import { recallAtK, ndcgAtK } from "../scoring/metrics.js";
@@ -896,6 +897,111 @@ function testFindSharedAttributeNeighbors() {
 }
 
 /**
+ * extractQueryMetadataHints: assert that domain/type hints are extracted from
+ * query tokens, stoplisted terms are excluded, and short values (length <= 2) are
+ * excluded.
+ *
+ * Corpus:
+ *   domains: ["billing", "tenants", "ab"]  (ab has length 2 -> excluded)
+ *   types:   ["concept", "rule"]           (concept is in stoplist -> excluded)
+ */
+function testExtractQueryMetadataHints() {
+  const id = "unit-extract-query-metadata-hints";
+  const ability = "metadata_hint_boost";
+  try {
+    const documents = [
+      {
+        frontmatter: { title: "Entry A", domain: "billing", type: "concept" },
+      },
+      {
+        frontmatter: { title: "Entry B", domain: "tenants", type: "rule" },
+      },
+      {
+        frontmatter: { title: "Entry C", domain: "ab", type: "concept" },
+      },
+    ];
+
+    const checks = [];
+
+    // Test 1: query "billing rules" — "billing" matches domain, "rule" does not match
+    // type "rule" because "rules" != "rule" (exact token match against frontmatter value)
+    const result1 = extractQueryMetadataHints("billing rules", documents);
+    checks.push({
+      label: 'query "billing rules": domains=["billing"]',
+      ok: result1.domains.length === 1 && result1.domains.includes("billing"),
+      got: JSON.stringify(result1.domains),
+    });
+    checks.push({
+      label: 'query "billing rules": types=[] ("rules" does not match frontmatter value "rule")',
+      ok: result1.types.length === 0,
+      got: JSON.stringify(result1.types),
+    });
+
+    // Test 2: query "concept overview" — "concept" is in stoplist -> no type match
+    const result2 = extractQueryMetadataHints("concept overview", documents);
+    checks.push({
+      label: 'query "concept overview": domains=[] (no domain token matches)',
+      ok: result2.domains.length === 0,
+      got: JSON.stringify(result2.domains),
+    });
+    checks.push({
+      label: 'query "concept overview": types=[] (concept is stoplisted)',
+      ok: result2.types.length === 0,
+      got: JSON.stringify(result2.types),
+    });
+
+    // Test 3: query "ab cd" — "ab" is a domain but length <= 2, excluded
+    const result3 = extractQueryMetadataHints("ab cd", documents);
+    checks.push({
+      label: 'query "ab cd": domains=[] (ab has length <= 2, excluded)',
+      ok: result3.domains.length === 0,
+      got: JSON.stringify(result3.domains),
+    });
+
+    // Test 4: query "no match here" — no domain or type tokens match
+    const result4 = extractQueryMetadataHints("no match here", documents);
+    checks.push({
+      label: 'query "no match here": domains=[]',
+      ok: result4.domains.length === 0,
+      got: JSON.stringify(result4.domains),
+    });
+    checks.push({
+      label: 'query "no match here": types=[]',
+      ok: result4.types.length === 0,
+      got: JSON.stringify(result4.types),
+    });
+
+    // Test 5: query "tenants rule" — "tenants" matches domain, "rule" matches type
+    const result5 = extractQueryMetadataHints("tenants rule", documents);
+    checks.push({
+      label: 'query "tenants rule": domains=["tenants"]',
+      ok: result5.domains.length === 1 && result5.domains.includes("tenants"),
+      got: JSON.stringify(result5.domains),
+    });
+    checks.push({
+      label: 'query "tenants rule": types=["rule"]',
+      ok: result5.types.length === 1 && result5.types.includes("rule"),
+      got: JSON.stringify(result5.types),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.label} (got ${c.got})`).join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} extractQueryMetadataHints assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
  * Run all unit tests and return results array.
  * Each result: { id, ability, passed, details }
  */
@@ -912,6 +1018,7 @@ export async function runUnitLayer() {
     testBuildWikilinkGraph(),
     testSeededPageRank(),
     testFindSharedAttributeNeighbors(),
+    testExtractQueryMetadataHints(),
   ];
   return results;
 }

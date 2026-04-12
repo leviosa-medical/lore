@@ -421,6 +421,75 @@ export function seededPageRank(
  * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
  * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
  */
+export const METADATA_HINT_BOOST = 1.5;
+export const METADATA_HINT_STOPLIST = ['concept', 'entry', 'note', 'guide', 'item', 'record'];
+
+/**
+ * Extracts domain and type hints from a query by matching query tokens against
+ * known domain/type values in the corpus. Values in the stoplist or with
+ * length <= 2 are excluded from matching.
+ */
+export function extractQueryMetadataHints(
+  query: string,
+  documents: Array<{ frontmatter: Frontmatter }>
+): { domains: string[]; types: string[] } {
+  // Collect all unique domain and type values from documents
+  const allDomains = new Set<string>();
+  const allTypes = new Set<string>();
+
+  for (const doc of documents) {
+    if (doc.frontmatter.domain) allDomains.add(doc.frontmatter.domain);
+    if (doc.frontmatter.type) allTypes.add(doc.frontmatter.type);
+  }
+
+  // Filter out values with length <= 2 and values in the stoplist
+  const stoplistLower = METADATA_HINT_STOPLIST.map((s) => s.toLowerCase());
+  const filterValue = (value: string): boolean => {
+    if (value.length <= 2) return false;
+    if (stoplistLower.includes(value.toLowerCase())) return false;
+    return true;
+  };
+
+  const candidateDomains = [...allDomains].filter(filterValue);
+  const candidateTypes = [...allTypes].filter(filterValue);
+
+  // Tokenize the query (lowercase, split on whitespace)
+  const queryTokens = query.toLowerCase().split(/\s+/);
+
+  // Check which domain/type values appear as tokens in the query
+  const matchedDomains = candidateDomains.filter((domain) =>
+    queryTokens.includes(domain.toLowerCase())
+  );
+  const matchedTypes = candidateTypes.filter((type) =>
+    queryTokens.includes(type.toLowerCase())
+  );
+
+  return { domains: matchedDomains, types: matchedTypes };
+}
+
+/**
+ * Applies a score multiplier (METADATA_HINT_BOOST) to results whose domain or
+ * type matches the extracted query hints. Returns results unchanged if hints are empty.
+ */
+export function applyMetadataHintBoost(
+  results: ScoredResult[],
+  hints: { domains: string[]; types: string[] }
+): ScoredResult[] {
+  if (hints.domains.length === 0 && hints.types.length === 0) return results;
+
+  const domainSet = new Set(hints.domains);
+  const typeSet = new Set(hints.types);
+
+  return results.map((r) => {
+    const domainMatch = r.frontmatter.domain !== undefined && domainSet.has(r.frontmatter.domain);
+    const typeMatch = r.frontmatter.type !== undefined && typeSet.has(r.frontmatter.type);
+    if (domainMatch || typeMatch) {
+      return { ...r, score: r.score * METADATA_HINT_BOOST };
+    }
+    return r;
+  });
+}
+
 export function findSharedAttributeNeighbors(
   seedPaths: string[],
   documents: Array<{ path: string; frontmatter: Frontmatter }>,
