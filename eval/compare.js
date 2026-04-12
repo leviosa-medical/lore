@@ -36,11 +36,14 @@ const KEEP_METRICS = [
   "ndcg_at_5",
   "ndcg_at_10",
   "abstention_accuracy",
+  "history_isolation_accuracy",
 ];
 
 // Primary metric per ability: recall_at_5 for retrieval, abstention_accuracy for abstention.
 function primaryMetric(ability) {
-  return ability === "abstention" ? "abstention_accuracy" : "recall_at_5";
+  if (ability === "abstention") return "abstention_accuracy";
+  if (ability === "knowledge_updates") return "recall_at_5";
+  return "recall_at_5";
 }
 
 // ---------------------------------------------------------------------------
@@ -295,12 +298,13 @@ function statusEmoji(status) {
 
 function metricDisplayName(metric) {
   const names = {
-    recall_at_1:         "Recall@1",
-    recall_at_5:         "Recall@5",
-    recall_at_10:        "Recall@10",
-    ndcg_at_5:           "NDCG@5",
-    ndcg_at_10:          "NDCG@10",
-    abstention_accuracy: "Accuracy",
+    recall_at_1:                "Recall@1",
+    recall_at_5:                "Recall@5",
+    recall_at_10:               "Recall@10",
+    ndcg_at_5:                  "NDCG@5",
+    ndcg_at_10:                 "NDCG@10",
+    abstention_accuracy:        "Accuracy",
+    history_isolation_accuracy: "History Isolation",
   };
   return names[metric] || metric;
 }

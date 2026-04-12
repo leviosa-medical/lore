@@ -127,6 +127,39 @@ function aggregateIntegration(integrationResults) {
         latency_p95_ms: Math.round(stats.p95),
         latency_max_ms: Math.round(stats.max),
       };
+    } else if (ability === "knowledge_updates") {
+      const positive = results.filter(r => r.expected_titles.length > 0);
+      const negative = results.filter(r => r.expected_titles.length === 0);
+
+      let sumR1 = 0, sumR5 = 0, sumR10 = 0, sumN5 = 0, sumN10 = 0;
+      for (const r of positive) {
+        sumR1  += recallAtK(r.retrieved_titles, r.expected_titles, 1);
+        sumR5  += recallAtK(r.retrieved_titles, r.expected_titles, 5);
+        sumR10 += recallAtK(r.retrieved_titles, r.expected_titles, 10);
+        sumN5  += ndcgAtK(r.retrieved_titles, r.expected_titles, 5);
+        sumN10 += ndcgAtK(r.retrieved_titles, r.expected_titles, 10);
+      }
+      const pn = positive.length || 1;
+
+      const isoAcc = negative.length > 0
+        ? negative.reduce((sum, r) => sum + r.abstentionAcc, 0) / negative.length
+        : 1.0;
+
+      const latencies = results.map(r => r.latencyMs);
+      const stats = latencyStats(latencies);
+
+      abilityMetrics[ability] = {
+        recall_at_5:                sumR5 / pn,
+        history_isolation_accuracy: isoAcc,
+        recall_at_1:                sumR1 / pn,
+        recall_at_10:               sumR10 / pn,
+        ndcg_at_5:                  sumN5 / pn,
+        ndcg_at_10:                 sumN10 / pn,
+        question_count:             results.length,
+        latency_p50_ms:             Math.round(stats.p50),
+        latency_p95_ms:             Math.round(stats.p95),
+        latency_max_ms:             Math.round(stats.max),
+      };
     } else {
       // Re-compute recall at 1, 5, 10 from raw retrieved/expected data
       let sumR1 = 0, sumR5 = 0, sumR10 = 0;
@@ -292,6 +325,17 @@ function checkThresholds(abilityMetrics, threshold, maxLatencyMs, layer, integra
           `Abstention accuracy ${fmt2(m.abstention_accuracy)} < threshold ${fmt2(threshold)}`
         );
       }
+    } else if (ability === "knowledge_updates") {
+      if (m.recall_at_5 < threshold) {
+        failures.push(
+          `Knowledge Updates recall@5 ${fmt2(m.recall_at_5)} < threshold ${fmt2(threshold)}`
+        );
+      }
+      if (m.history_isolation_accuracy < threshold) {
+        failures.push(
+          `Knowledge Updates history_isolation_accuracy ${fmt2(m.history_isolation_accuracy)} < threshold ${fmt2(threshold)}`
+        );
+      }
     } else {
       if (m.recall_at_5 < threshold) {
         failures.push(
@@ -351,6 +395,9 @@ async function writeReport(
         latency_max_ms:  m.latency_max_ms ?? null,
         question_count:  m.question_count,
       };
+      if (m.history_isolation_accuracy !== undefined) {
+        abilities[ability].history_isolation_accuracy = m.history_isolation_accuracy;
+      }
     }
   }
 
