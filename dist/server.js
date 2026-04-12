@@ -30204,8 +30204,8 @@ function recencyBonus(updated) {
   const ageDays = Math.max(0, (Date.now() - ts) / 864e5);
   return 0.5 / (1 + ageDays / 90);
 }
-var EXPANSION_THRESHOLD = 0.2;
-var EXPANSION_DISCOUNT = 0.85;
+var EXPANSION_THRESHOLD = 0.5;
+var EXPANSION_DISCOUNT = 0.75;
 function applyConfidenceAndRecency(results) {
   return results.map((r) => ({
     ...r,
@@ -30987,13 +30987,13 @@ server.registerTool("lore_query", {
   const existingPaths = new Set(results.map((r) => r.path));
   const expansionCandidates = Array.from(pprScores.entries()).filter(([p]) => !existingPaths.has(p) && !seeds.has(p)).sort((a, b) => b[1] - a[1]).slice(0, MAX_EXPANSION);
   const expansionResults = [];
-  for (const [candidatePath, pprScore] of expansionCandidates) {
+  for (const [candidatePath] of expansionCandidates) {
     const doc = documents.find((d) => d.path === candidatePath);
     if (!doc)
       continue;
     expansionResults.push({
       ...doc,
-      score: pprScore * maxScore * EXPANSION_DISCOUNT
+      score: maxScore * EXPANSION_DISCOUNT
     });
   }
   const afterPPRPaths = /* @__PURE__ */ new Set([...results.map((r) => r.path), ...expansionResults.map((r) => r.path)]);

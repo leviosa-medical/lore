@@ -104,8 +104,8 @@ export function recencyBonus(updated) {
     // Half-life decay: up to 0.5 for entries updated today, halves every 90 days
     return 0.5 / (1 + ageDays / 90);
 }
-export const EXPANSION_THRESHOLD = 0.2;
-export const EXPANSION_DISCOUNT = 0.85;
+export const EXPANSION_THRESHOLD = 0.5;
+export const EXPANSION_DISCOUNT = 0.75;
 export function applyConfidenceAndRecency(results) {
     return results.map((r) => ({
         ...r,

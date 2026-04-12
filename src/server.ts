@@ -754,14 +754,18 @@ server.registerTool(
       .sort((a, b) => b[1] - a[1])
       .slice(0, MAX_EXPANSION);
 
-    // Look up each expansion candidate in the documents array and assign discounted score
+    // Look up each expansion candidate in the documents array and assign discounted score.
+    // Use a flat score of maxScore * EXPANSION_DISCOUNT so expansion candidates are ranked
+    // near (but below) the top BM25 results. PPR score is used only for ranking among
+    // expansion candidates (handled by the sort above), not to scale their final score.
+    // This ensures graph-expanded entries are visible in top-5 results, matching Phase 1 behavior.
     const expansionResults: typeof results = [];
-    for (const [candidatePath, pprScore] of expansionCandidates) {
+    for (const [candidatePath] of expansionCandidates) {
       const doc = documents.find((d) => d.path === candidatePath);
       if (!doc) continue;
       expansionResults.push({
         ...doc,
-        score: pprScore * maxScore * EXPANSION_DISCOUNT,
+        score: maxScore * EXPANSION_DISCOUNT,
       });
     }
 
