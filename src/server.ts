@@ -17,6 +17,9 @@ import {
   buildWikilinkGraph,
   seededPageRank,
   MAX_EXPANSION,
+  findSharedAttributeNeighbors,
+  SHARED_ATTR_DISCOUNT,
+  SHARED_ATTR_MAX,
   parseFrontmatter,
   buildPage,
   extractBody,
@@ -756,8 +759,30 @@ server.registerTool(
       });
     }
 
-    // Merge BM25 results and expansion results sorted by score descending
-    let finalResults = [...results, ...expansionResults];
+    // Step 5b: Shared-attribute expansion
+    // Find documents sharing domain+tags with qualifying BM25 results (not already in results)
+    const afterPPRPaths = new Set([...results.map((r) => r.path), ...expansionResults.map((r) => r.path)]);
+    const sharedAttrNeighbors = findSharedAttributeNeighbors(
+      qualifyingResults.map((r) => r.path),
+      documents.map((d) => ({ path: d.path, frontmatter: d.frontmatter })),
+      afterPPRPaths,
+      SHARED_ATTR_MAX
+    );
+
+    // Assign score = SHARED_ATTR_DISCOUNT * top qualifying result's score
+    const parentScore = qualifyingResults.length > 0 ? qualifyingResults[0].score : 0;
+    const sharedAttrResults: typeof results = [];
+    for (const neighbor of sharedAttrNeighbors) {
+      const doc = documents.find((d) => d.path === neighbor.path);
+      if (!doc) continue;
+      sharedAttrResults.push({
+        ...doc,
+        score: SHARED_ATTR_DISCOUNT * parentScore,
+      });
+    }
+
+    // Merge BM25 results, PPR expansion results, and shared-attribute results sorted by score descending
+    let finalResults = [...results, ...expansionResults, ...sharedAttrResults];
     finalResults.sort((a, b) => b.score - a.score);
 
     // Step 6: Collect top results for output

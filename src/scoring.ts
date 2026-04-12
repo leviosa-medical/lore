@@ -353,6 +353,9 @@ export const PPR_ITERATIONS = 20;
 export const PPR_MIN_SCORE = 0.001;
 export const MAX_EXPANSION = 5;
 
+export const SHARED_ATTR_DISCOUNT = 0.7;
+export const SHARED_ATTR_MAX = 3;
+
 export function seededPageRank(
   graph: Map<string, Set<string>>,
   seeds: Map<string, number>,
@@ -411,4 +414,82 @@ export function seededPageRank(
   }
 
   return result;
+}
+
+/**
+ * Find documents that share domain+tags attributes with seed documents.
+ * Returns candidates sharing at least (domain + 1 tag) or (2+ tags without domain match),
+ * sorted by number of shared attributes descending, then path alphabetically as tie-breaker.
+ */
+export function findSharedAttributeNeighbors(
+  seedPaths: string[],
+  documents: Array<{ path: string; frontmatter: Frontmatter }>,
+  excludePaths: Set<string>,
+  maxResults: number = SHARED_ATTR_MAX
+): Array<{ path: string; sharedAttributes: string[] }> {
+  if (seedPaths.length === 0 || documents.length === 0) return [];
+
+  const seedPathSet = new Set(seedPaths);
+
+  // Build seed attribute collections (domain and tags per seed)
+  const seedDomains = new Set<string>();
+  const seedTags = new Set<string>();
+
+  for (const seedPath of seedPaths) {
+    const seedDoc = documents.find((d) => d.path === seedPath);
+    if (!seedDoc) continue;
+    const fm = seedDoc.frontmatter;
+    if (fm.domain) seedDomains.add(fm.domain);
+    if (fm.tags) {
+      for (const tag of fm.tags) seedTags.add(tag);
+    }
+  }
+
+  // For each non-excluded, non-seed document, compute shared attributes
+  const candidates: Array<{ path: string; sharedAttributes: string[]; count: number }> = [];
+
+  for (const doc of documents) {
+    if (seedPathSet.has(doc.path) || excludePaths.has(doc.path)) continue;
+
+    const fm = doc.frontmatter;
+    const sharedAttrs: string[] = [];
+
+    // Check domain match
+    const hasDomainMatch = fm.domain !== undefined && seedDomains.has(fm.domain);
+    if (hasDomainMatch && fm.domain) {
+      sharedAttrs.push(`domain:${fm.domain}`);
+    }
+
+    // Check tag overlap
+    if (fm.tags) {
+      for (const tag of fm.tags) {
+        if (seedTags.has(tag)) {
+          sharedAttrs.push(`tag:${tag}`);
+        }
+      }
+    }
+
+    // Count shared tags (exclude the domain entry from sharedAttrs for tag-count purposes)
+    const sharedTagCount = sharedAttrs.filter((a) => a.startsWith("tag:")).length;
+
+    // Require: (domain match AND 1+ shared tag) OR (2+ shared tags without domain match)
+    const meetsThreshold =
+      (hasDomainMatch && sharedTagCount >= 1) ||
+      (!hasDomainMatch && sharedTagCount >= 2);
+
+    if (meetsThreshold) {
+      candidates.push({ path: doc.path, sharedAttributes: sharedAttrs, count: sharedAttrs.length });
+    }
+  }
+
+  // Sort by shared count descending, then path alphabetically as deterministic tie-breaker
+  candidates.sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    return a.path.localeCompare(b.path);
+  });
+
+  return candidates.slice(0, maxResults).map((c) => ({
+    path: c.path,
+    sharedAttributes: c.sharedAttributes,
+  }));
 }

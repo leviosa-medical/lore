@@ -30353,6 +30353,8 @@ var PPR_ALPHA = 0.85;
 var PPR_ITERATIONS = 20;
 var PPR_MIN_SCORE = 1e-3;
 var MAX_EXPANSION = 5;
+var SHARED_ATTR_DISCOUNT = 0.7;
+var SHARED_ATTR_MAX = 3;
 function seededPageRank(graph, seeds, alpha = PPR_ALPHA, iterations = PPR_ITERATIONS, minScore = PPR_MIN_SCORE) {
   if (graph.size === 0 || seeds.size === 0)
     return /* @__PURE__ */ new Map();
@@ -30392,6 +30394,57 @@ function seededPageRank(graph, seeds, alpha = PPR_ALPHA, iterations = PPR_ITERAT
     }
   }
   return result;
+}
+function findSharedAttributeNeighbors(seedPaths, documents, excludePaths, maxResults = SHARED_ATTR_MAX) {
+  if (seedPaths.length === 0 || documents.length === 0)
+    return [];
+  const seedPathSet = new Set(seedPaths);
+  const seedDomains = /* @__PURE__ */ new Set();
+  const seedTags = /* @__PURE__ */ new Set();
+  for (const seedPath of seedPaths) {
+    const seedDoc = documents.find((d) => d.path === seedPath);
+    if (!seedDoc)
+      continue;
+    const fm = seedDoc.frontmatter;
+    if (fm.domain)
+      seedDomains.add(fm.domain);
+    if (fm.tags) {
+      for (const tag of fm.tags)
+        seedTags.add(tag);
+    }
+  }
+  const candidates = [];
+  for (const doc of documents) {
+    if (seedPathSet.has(doc.path) || excludePaths.has(doc.path))
+      continue;
+    const fm = doc.frontmatter;
+    const sharedAttrs = [];
+    const hasDomainMatch = fm.domain !== void 0 && seedDomains.has(fm.domain);
+    if (hasDomainMatch && fm.domain) {
+      sharedAttrs.push(`domain:${fm.domain}`);
+    }
+    if (fm.tags) {
+      for (const tag of fm.tags) {
+        if (seedTags.has(tag)) {
+          sharedAttrs.push(`tag:${tag}`);
+        }
+      }
+    }
+    const sharedTagCount = sharedAttrs.filter((a) => a.startsWith("tag:")).length;
+    const meetsThreshold = hasDomainMatch && sharedTagCount >= 1 || !hasDomainMatch && sharedTagCount >= 2;
+    if (meetsThreshold) {
+      candidates.push({ path: doc.path, sharedAttributes: sharedAttrs, count: sharedAttrs.length });
+    }
+  }
+  candidates.sort((a, b) => {
+    if (b.count !== a.count)
+      return b.count - a.count;
+    return a.path.localeCompare(b.path);
+  });
+  return candidates.slice(0, maxResults).map((c) => ({
+    path: c.path,
+    sharedAttributes: c.sharedAttributes
+  }));
 }
 
 // dist/server.js
@@ -30901,7 +30954,20 @@ server.registerTool("lore_query", {
       score: pprScore * maxScore * EXPANSION_DISCOUNT
     });
   }
-  let finalResults = [...results, ...expansionResults];
+  const afterPPRPaths = /* @__PURE__ */ new Set([...results.map((r) => r.path), ...expansionResults.map((r) => r.path)]);
+  const sharedAttrNeighbors = findSharedAttributeNeighbors(qualifyingResults.map((r) => r.path), documents.map((d) => ({ path: d.path, frontmatter: d.frontmatter })), afterPPRPaths, SHARED_ATTR_MAX);
+  const parentScore = qualifyingResults.length > 0 ? qualifyingResults[0].score : 0;
+  const sharedAttrResults = [];
+  for (const neighbor of sharedAttrNeighbors) {
+    const doc = documents.find((d) => d.path === neighbor.path);
+    if (!doc)
+      continue;
+    sharedAttrResults.push({
+      ...doc,
+      score: SHARED_ATTR_DISCOUNT * parentScore
+    });
+  }
+  let finalResults = [...results, ...expansionResults, ...sharedAttrResults];
   finalResults.sort((a, b) => b.score - a.score);
   const topResults = finalResults.slice(0, 10);
   if (topResults.length === 0) {

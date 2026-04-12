@@ -13,6 +13,7 @@ import {
   seededPageRank,
   PPR_MIN_SCORE,
   buildLookupMaps,
+  findSharedAttributeNeighbors,
 } from "../../dist/scoring.js";
 
 import { recallAtK, ndcgAtK } from "../scoring/metrics.js";
@@ -798,6 +799,103 @@ function testSeededPageRank() {
 }
 
 /**
+ * findSharedAttributeNeighbors: assert that documents sharing domain+tags with seed
+ * are returned, ranked by attribute overlap, and documents with only 1 shared tag
+ * (no domain match) are excluded.
+ *
+ * Corpus:
+ *   A: domain=billing, tags=[billing, concept]  <- seed
+ *   B: domain=billing, tags=[billing, rule]     <- same domain + 1 shared tag ("billing") -> included
+ *   C: domain=tenants, tags=[tenants, concept]  <- different domain + 1 shared tag ("concept") -> excluded
+ *   D: domain=billing, tags=[billing, concept]  <- same domain + 2 shared tags -> included, ranks above B
+ */
+function testFindSharedAttributeNeighbors() {
+  const id = "unit-shared-attr-neighbors";
+  const ability = "shared_attr_traversal";
+  try {
+    const documents = [
+      {
+        path: "billing/a.md",
+        frontmatter: { title: "Entry A", domain: "billing", tags: ["billing", "concept"] },
+      },
+      {
+        path: "billing/b.md",
+        frontmatter: { title: "Entry B", domain: "billing", tags: ["billing", "rule"] },
+      },
+      {
+        path: "tenants/c.md",
+        frontmatter: { title: "Entry C", domain: "tenants", tags: ["tenants", "concept"] },
+      },
+      {
+        path: "billing/d.md",
+        frontmatter: { title: "Entry D", domain: "billing", tags: ["billing", "concept"] },
+      },
+    ];
+
+    const seedPaths = ["billing/a.md"];
+    const excludePaths = new Set();
+    const neighbors = findSharedAttributeNeighbors(seedPaths, documents, excludePaths);
+
+    const checks = [];
+
+    // D should be returned (same domain "billing" + shared tags "billing" and "concept" = 3 attrs)
+    const dNeighbor = neighbors.find((n) => n.path === "billing/d.md");
+    checks.push({
+      label: "D is returned (same domain + 2 shared tags)",
+      ok: dNeighbor !== undefined,
+      got: JSON.stringify(neighbors.map((n) => n.path)),
+    });
+
+    // B should be returned (same domain "billing" + shared tag "billing" = 2 attrs)
+    const bNeighbor = neighbors.find((n) => n.path === "billing/b.md");
+    checks.push({
+      label: "B is returned (same domain + 1 shared tag)",
+      ok: bNeighbor !== undefined,
+      got: JSON.stringify(neighbors.map((n) => n.path)),
+    });
+
+    // C should NOT be returned (different domain, only 1 shared tag "concept" — fails threshold)
+    const cNeighbor = neighbors.find((n) => n.path === "tenants/c.md");
+    checks.push({
+      label: "C is NOT returned (different domain, only 1 shared tag)",
+      ok: cNeighbor === undefined,
+      got: JSON.stringify(neighbors.map((n) => n.path)),
+    });
+
+    // D should rank above B (more shared attributes: 3 vs 2)
+    const dIndex = neighbors.findIndex((n) => n.path === "billing/d.md");
+    const bIndex = neighbors.findIndex((n) => n.path === "billing/b.md");
+    checks.push({
+      label: "D ranks above B (more shared attributes)",
+      ok: dIndex !== -1 && bIndex !== -1 && dIndex < bIndex,
+      got: `dIndex=${dIndex}, bIndex=${bIndex}`,
+    });
+
+    // sharedAttributes array is populated for D (should include domain and tag entries)
+    checks.push({
+      label: "D has non-empty sharedAttributes array",
+      ok: dNeighbor !== undefined && dNeighbor.sharedAttributes.length > 0,
+      got: JSON.stringify(dNeighbor?.sharedAttributes),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.label} (got ${c.got})`).join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} findSharedAttributeNeighbors assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
  * Run all unit tests and return results array.
  * Each result: { id, ability, passed, details }
  */
@@ -813,6 +911,7 @@ export async function runUnitLayer() {
     testExtractSearchableBody(),
     testBuildWikilinkGraph(),
     testSeededPageRank(),
+    testFindSharedAttributeNeighbors(),
   ];
   return results;
 }
