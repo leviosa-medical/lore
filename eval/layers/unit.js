@@ -7,6 +7,8 @@ import {
   applyLinkBoost,
   extractWikilinks,
   decomposeQuery,
+  extractSearchableBody,
+  HISTORY_MARKER,
 } from "../../dist/scoring.js";
 
 import { recallAtK, ndcgAtK } from "../scoring/metrics.js";
@@ -512,6 +514,99 @@ function testMetadataWeighting() {
 }
 
 /**
+ * extractSearchableBody: assert that the ## History section is stripped for
+ * BM25 indexing, and that content without a history section is returned unchanged.
+ */
+function testExtractSearchableBody() {
+  const id = "unit-extract-searchable-body";
+  const ability = "extract_searchable_body";
+  try {
+    const checks = [];
+
+    // No history section — returns full body unchanged
+    const noHistory =
+      "---\ntitle: Billing Rules\ntype: concept\n---\n\nThis is the main body content.";
+    const noHistoryResult = extractSearchableBody(noHistory);
+    checks.push({
+      label: "no history section returns full body",
+      ok: noHistoryResult === "This is the main body content.",
+      got: noHistoryResult,
+    });
+
+    // With history section — strips everything from HISTORY_MARKER onward
+    const withHistory =
+      "---\ntitle: Billing Rules\ntype: concept\n---\n\nCurrent body text." +
+      HISTORY_MARKER +
+      "- **2024-01-01**: Changed from oldterm to current approach";
+    const withHistoryResult = extractSearchableBody(withHistory);
+    checks.push({
+      label: "history section is stripped from body",
+      ok: withHistoryResult === "Current body text.",
+      got: withHistoryResult,
+    });
+
+    // History terms do NOT appear in searchable body
+    checks.push({
+      label: "oldterm is not present in searchable body",
+      ok: !withHistoryResult.includes("oldterm"),
+      got: withHistoryResult,
+    });
+
+    // Current body terms remain in searchable body
+    checks.push({
+      label: "current body text is preserved",
+      ok: withHistoryResult.includes("Current body text"),
+      got: withHistoryResult,
+    });
+
+    // BM25 does not score on history terms: a query for a history term
+    // should not return the document when extractSearchableBody is used
+    const documents = [
+      {
+        path: "billing/rules.md",
+        title: "Billing Rules",
+        content:
+          "---\ntitle: Billing Rules\ntype: concept\n---\n\nCurrent billing approach." +
+          HISTORY_MARKER +
+          "- **2024-01-01**: Changed from legacypayment to current approach",
+        frontmatter: { title: "Billing Rules", type: "concept" },
+      },
+    ];
+    const historyQueryResults = computeBM25Scores("legacypayment", documents);
+    checks.push({
+      label: "BM25 does not match document on history-only term",
+      ok: historyQueryResults.length === 0,
+      got: `${historyQueryResults.length} results`,
+    });
+
+    // BM25 still scores on current body terms
+    const currentQueryResults = computeBM25Scores("billing approach", documents);
+    checks.push({
+      label: "BM25 matches document on current body term",
+      ok: currentQueryResults.length > 0,
+      got: `${currentQueryResults.length} results`,
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length > 0) {
+      const detail = failed
+        .map((c) => `${c.label} (got: ${c.got})`)
+        .join("; ");
+      return { id, ability, passed: false, details: `Failures: ${detail}` };
+    }
+
+    return {
+      id,
+      ability,
+      passed: true,
+      details: `All ${checks.length} extractSearchableBody assertions passed`,
+    };
+  } catch (err) {
+    return { id, ability, passed: false, details: `Error: ${err.message}` };
+  }
+}
+
+/**
  * Run all unit tests and return results array.
  * Each result: { id, ability, passed, details }
  */
@@ -524,6 +619,7 @@ export async function runUnitLayer() {
     testWikilinkExtraction(),
     testDecomposeQuery(),
     testMetadataWeighting(),
+    testExtractSearchableBody(),
   ];
   return results;
 }

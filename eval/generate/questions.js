@@ -38,7 +38,7 @@ function pickDistinct(rng, pool, count) {
 /**
  * Generate ground-truth question sets from a corpus manifest.
  *
- * @param {Object} manifest - Map of title -> { path, type, domain, confidence, created, updated, wikilinks, uniqueTerms, supersedes? }
+ * @param {Object} manifest - Map of title -> { path, type, domain, confidence, created, updated, wikilinks, uniqueTerms, historyTerms? }
  * @param {string} tier     - "small" | "medium" | "large"
  * @returns {Array}         - Array of question objects { id, ability, query, expected_titles, k, grades?, filterParams? }
  */
@@ -51,27 +51,15 @@ export function generateQuestions(manifest, tier) {
 
   const questions = [];
 
-  // Separate v2 entries (those with supersedes) from base entries
   const allTitles = Object.keys(manifest);
-  const v2Titles = allTitles.filter(t => manifest[t].supersedes != null);
-  const baseTitles = allTitles.filter(t => manifest[t].supersedes == null);
-
-  // Build a set of v2 entry titles for quick lookup
-  const v2TitleSet = new Set(v2Titles);
-
-  // Build supersedes map: v2Title -> v1Title
-  const supersededBy = new Map(); // v1Title -> v2Title
-  for (const v2Title of v2Titles) {
-    const v1Title = manifest[v2Title].supersedes;
-    supersededBy.set(v1Title, v2Title);
-  }
+  const titlesWithHistory = allTitles.filter(t => manifest[t].historyTerms && manifest[t].historyTerms.length > 0);
 
   // -------------------------------------------------------------------------
   // Ability 1: information_extraction
   // -------------------------------------------------------------------------
-  // Pick non-v2 entries; use one of their uniqueTerms as query.
+  // Pick entries; use one of their uniqueTerms as query.
   {
-    const candidates = pickDistinct(rng, baseTitles, counts.information_extraction);
+    const candidates = pickDistinct(rng, allTitles, counts.information_extraction);
     for (let i = 0; i < candidates.length; i++) {
       const title = candidates[i];
       const entry = manifest[title];
@@ -93,7 +81,7 @@ export function generateQuestions(manifest, tier) {
   // query. expected_titles = [source] + 1-hop targets.
   // grades: source = 1.0, each wikilink target = 0.5.
   {
-    const withLinks = baseTitles.filter(t => manifest[t].wikilinks.length > 0);
+    const withLinks = allTitles.filter(t => manifest[t].wikilinks.length > 0);
     const candidates = pickDistinct(rng, withLinks, counts.multi_hop);
     for (let i = 0; i < candidates.length; i++) {
       const sourceTitle = candidates[i];
@@ -124,30 +112,42 @@ export function generateQuestions(manifest, tier) {
   // -------------------------------------------------------------------------
   // Ability 3: knowledge_updates
   // -------------------------------------------------------------------------
-  // For v2 entries, use shared vocabulary (domain + type) as the query.
-  // expected_titles: [v2Title, v1Title]
-  // grades: v2 = 2, v1 = 1
+  // Positive: use uniqueTerms from entries with historyTerms; expected_titles = [title]
+  // Negative: use historyTerms as query; expected_titles = [] (history pollution check)
   {
-    const candidates = pickDistinct(rng, v2Titles, counts.knowledge_updates);
-    for (let i = 0; i < candidates.length; i++) {
-      const v2Title = candidates[i];
-      const v2Entry = manifest[v2Title];
-      const v1Title = v2Entry.supersedes;
+    const count = counts.knowledge_updates;
+    const positiveCount = Math.ceil(count / 2);
+    const negativeCount = count - positiveCount;
 
-      // Use domain + type as shared vocabulary query (both appear in both bodies)
-      const query = `${v2Entry.domain} ${v2Entry.type}`;
+    const candidates = pickDistinct(rng, titlesWithHistory, count);
 
-      const grades = new Map();
-      grades.set(v2Title, 2);
-      grades.set(v1Title, 1);
-
+    // Positive questions
+    for (let i = 0; i < Math.min(positiveCount, candidates.length); i++) {
+      const title = candidates[i];
+      const entry = manifest[title];
+      const term = entry.uniqueTerms[rng.next() % entry.uniqueTerms.length];
       questions.push({
         id: formatId("ku", i + 1),
         ability: "knowledge_updates",
-        query,
-        expected_titles: [v2Title, v1Title],
+        questionType: "positive",
+        query: term,
+        expected_titles: [title],
         k: 5,
-        grades,
+      });
+    }
+
+    // Negative questions
+    for (let i = 0; i < Math.min(negativeCount, candidates.length); i++) {
+      const title = candidates[i];
+      const entry = manifest[title];
+      const historyTerm = entry.historyTerms[rng.next() % entry.historyTerms.length];
+      questions.push({
+        id: formatId("ku", positiveCount + i + 1),
+        ability: "knowledge_updates",
+        questionType: "negative",
+        query: historyTerm,
+        expected_titles: [],
+        k: 5,
       });
     }
   }
@@ -204,7 +204,7 @@ export function generateQuestions(manifest, tier) {
       const kind = filterKinds[i % filterKinds.length];
 
       // Pick a random base entry to build the query from
-      const sourceTitle = baseTitles[rng.next() % baseTitles.length];
+      const sourceTitle = allTitles[rng.next() % allTitles.length];
       const sourceEntry = manifest[sourceTitle];
       const term = sourceEntry.uniqueTerms[rng.next() % sourceEntry.uniqueTerms.length];
 

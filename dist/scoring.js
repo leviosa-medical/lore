@@ -26,6 +26,20 @@ export function extractBody(content) {
     const match = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)/);
     return match ? match[1].trim() : content.trim();
 }
+export const HISTORY_MARKER = "\n## History\n";
+/**
+ * Returns the body text with the ## History section stripped for BM25 indexing.
+ * Known limitation: if the body starts exactly with "## History\n" (no preceding
+ * newline), HISTORY_MARKER will not match because it begins with "\n". In practice,
+ * buildPage always places body content before the history section.
+ */
+export function extractSearchableBody(content) {
+    const body = extractBody(content);
+    const idx = body.indexOf(HISTORY_MARKER);
+    if (idx === -1)
+        return body;
+    return body.slice(0, idx).trim();
+}
 export function buildPage(frontmatter, body) {
     const lines = ["---"];
     const sanitize = (v) => v.replace(/[\n\r]/g, " ").replace(/"/g, '\\"');
@@ -64,10 +78,14 @@ export function slugify(title) {
         .replace(/^-|-$/g, "");
 }
 export function tokenize(text) {
-    return text
-        .toLowerCase()
-        .split(/\W+/)
-        .filter((w) => w.length > 2);
+    const lower = text.toLowerCase();
+    // Preserve hyphenated compound terms (e.g., "invoice-processing-42") as single
+    // tokens alongside the individual words. Compound tokens have very low document
+    // frequency, giving them high IDF — critical for matching unique key terms that
+    // BM25 would otherwise dilute into common component words.
+    const compounds = lower.match(/[a-z0-9]+(?:-[a-z0-9]+)+/g) || [];
+    const words = lower.split(/\W+/).filter((w) => w.length > 2);
+    return [...words, ...compounds];
 }
 export function confidenceBonus(confidence) {
     if (confidence === "verified")
@@ -115,7 +133,7 @@ export function computeBM25Scores(query, documents, k1 = 1.2, b = 0.75) {
     for (const doc of documents) {
         const metaText = [doc.frontmatter.domain, doc.frontmatter.type, ...(doc.frontmatter.tags || [])].filter(Boolean).join(" ");
         const searchKeys = Array.isArray(doc.frontmatter.search_keys) ? doc.frontmatter.search_keys.join(" ") : "";
-        const bodyText = doc.title + " " + extractBody(doc.content) + " " + searchKeys;
+        const bodyText = doc.title + " " + extractSearchableBody(doc.content) + " " + searchKeys;
         const bodyTokens = tokenize(bodyText);
         const metaTokens = tokenize(metaText);
         const allTokens = [...bodyTokens, ...metaTokens];
