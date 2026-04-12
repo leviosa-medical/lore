@@ -16,6 +16,8 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -36,7 +38,6 @@ jobs:
       - name: Check if eval questions changed
         id: eval-changed
         run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
           CHANGED=$(git diff origin/${{ github.event.pull_request.base.ref }}...HEAD --name-only -- eval/generate/)
           if [ -n "$CHANGED" ]; then
             echo "eval_questions_changed=true" >> "$GITHUB_OUTPUT"
