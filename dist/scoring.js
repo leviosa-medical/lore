@@ -78,10 +78,14 @@ export function slugify(title) {
         .replace(/^-|-$/g, "");
 }
 export function tokenize(text) {
-    return text
-        .toLowerCase()
-        .split(/\W+/)
-        .filter((w) => w.length > 2);
+    const lower = text.toLowerCase();
+    // Preserve hyphenated compound terms (e.g., "invoice-processing-42") as single
+    // tokens alongside the individual words. Compound tokens have very low document
+    // frequency, giving them high IDF — critical for matching unique key terms that
+    // BM25 would otherwise dilute into common component words.
+    const compounds = lower.match(/[a-z0-9]+(?:-[a-z0-9]+)+/g) || [];
+    const words = lower.split(/\W+/).filter((w) => w.length > 2);
+    return [...words, ...compounds];
 }
 export function confidenceBonus(confidence) {
     if (confidence === "verified")

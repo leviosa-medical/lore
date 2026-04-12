@@ -30183,7 +30183,10 @@ function slugify2(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 function tokenize(text) {
-  return text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
+  const lower = text.toLowerCase();
+  const compounds = lower.match(/[a-z0-9]+(?:-[a-z0-9]+)+/g) || [];
+  const words = lower.split(/\W+/).filter((w) => w.length > 2);
+  return [...words, ...compounds];
 }
 function confidenceBonus(confidence) {
   if (confidence === "verified")
@@ -30600,7 +30603,7 @@ server.registerTool("lore_write", {
     const historyIdx = existingBody.indexOf(HISTORY_MARKER);
     const newLine = `- **${today()}**: ${change_note}`;
     if (historyIdx !== -1) {
-      const historyContent = existingBody.slice(historyIdx + HISTORY_MARKER.length);
+      const historyContent = existingBody.slice(historyIdx + HISTORY_MARKER.length).trimStart();
       finalBody = body + HISTORY_MARKER + newLine + "\n" + historyContent;
     } else {
       finalBody = body + "\n\n## History\n\n" + newLine;
