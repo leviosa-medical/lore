@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-04-12T10:18:28.769Z",
+  "generated_at": "2026-04-12T11:00:36.814Z",
   "tier": "small",
   "layer": "all",
-  "commit": "4260a49",
+  "commit": "0fd343e",
   "abilities": {
     "information_extraction": {
       "recall_at_1": 1,
@@ -29,7 +29,8 @@
       "recall_at_5": 1,
       "recall_at_10": 1,
       "ndcg_at_5": 1,
-      "ndcg_at_10": 1
+      "ndcg_at_10": 1,
+      "history_isolation_accuracy": 1
     },
     "keyword_metadata": {
       "recall_at_1": 0.45,
