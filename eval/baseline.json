@@ -1,47 +1,41 @@
 {
-  "generated_at": "2026-04-12T00:31:14.534Z",
-  "tier": "small",
-  "layer": "all",
-  "commit": "feat/knowledge-updates-consolidation",
-  "abilities": {
-    "information_extraction": {
-      "recall_at_1": 0.8,
-      "recall_at_5": 1,
-      "recall_at_10": 1,
-      "ndcg_at_5": 0.9017782560805999,
-      "ndcg_at_10": 0.9017782560805999
-    },
-    "multi_hop": {
-      "recall_at_1": 0.125,
-      "recall_at_5": 0.5104166666666666,
-      "recall_at_10": 0.6666666666666666,
-      "ndcg_at_5": 0.4863836246285471,
-      "ndcg_at_10": 0.5710613627777632
-    },
-    "knowledge_updates": {
-      "recall_at_1": 0.6666666666666666,
-      "recall_at_5": 1,
-      "recall_at_10": 1,
-      "ndcg_at_5": 0.8769765845238192,
-      "ndcg_at_10": 0.8769765845238192,
-      "history_isolation_accuracy": 0
-    },
-    "keyword_metadata": {
-      "recall_at_1": 0.5833333333333334,
-      "recall_at_5": 0.9,
-      "recall_at_10": 1,
-      "ndcg_at_5": 0.8976091290489145,
-      "ndcg_at_10": 0.9427185426884448
-    },
-    "filtered_search": {
-      "recall_at_1": 0.4,
-      "recall_at_5": 0.8,
-      "recall_at_10": 1,
-      "ndcg_at_5": 0.6261859507142915,
-      "ndcg_at_10": 0.6974273881358959
-    },
-    "abstention": {
-      "abstention_accuracy": 1
-    }
+  "information_extraction": {
+    "recall_at_1": 0.8,
+    "recall_at_5": 1,
+    "recall_at_10": 1,
+    "ndcg_at_5": 0.9017782560805999,
+    "ndcg_at_10": 0.9017782560805999
+  },
+  "multi_hop": {
+    "recall_at_1": 0.125,
+    "recall_at_5": 0.5104166666666666,
+    "recall_at_10": 0.6666666666666666,
+    "ndcg_at_5": 0.4863836246285471,
+    "ndcg_at_10": 0.5710613627777632
+  },
+  "knowledge_updates": {
+    "recall_at_1": 0.6666666666666666,
+    "recall_at_5": 1,
+    "recall_at_10": 1,
+    "ndcg_at_5": 0.8769765845238192,
+    "ndcg_at_10": 0.8769765845238192,
+    "history_isolation_accuracy": 1
+  },
+  "keyword_metadata": {
+    "recall_at_1": 0.5833333333333334,
+    "recall_at_5": 0.9,
+    "recall_at_10": 1,
+    "ndcg_at_5": 0.8976091290489145,
+    "ndcg_at_10": 0.9427185426884448
+  },
+  "filtered_search": {
+    "recall_at_1": 0.4,
+    "recall_at_5": 0.8,
+    "recall_at_10": 1,
+    "ndcg_at_5": 0.6261859507142915,
+    "ndcg_at_10": 0.6974273881358959
+  },
+  "abstention": {
+    "abstention_accuracy": 1
   }
 }

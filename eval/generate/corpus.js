@@ -364,7 +364,15 @@ export async function generateCorpus(tier, outputDir) {
   for (let k = 0; k < historyCount; k++) {
     const entry = entries[k];
     const noteCount = rng.int(2, 3);
-    const historyTerms = makeUniqueTerms(entry.domain, noteCount);
+    // Generate concatenated terms (no hyphens) so BM25 tokenization treats
+    // them as single opaque tokens that won't partially match corpus vocabulary.
+    const nouns = VOCAB[entry.domain].nouns;
+    const historyTerms = [];
+    for (let h = 0; h < noteCount; h++) {
+      const noun = nouns[rng.next() % nouns.length];
+      const mod = MODIFIERS[rng.next() % MODIFIERS.length];
+      historyTerms.push(`${noun}${mod}${termSeq++}`);
+    }
     const historyLines = ["", "", "## History", ""];
     for (let h = 0; h < noteCount; h++) {
       const dayOffset = rng.int(0, 180);
