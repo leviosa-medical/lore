@@ -222,7 +222,7 @@ export async function runIntegrationLayer(questions, lorePath) {
       let ndcg = 0;
       let abstentionAcc = 0;
 
-      if (question.ability === "abstention") {
+      if (question.expected_titles.length === 0) {
         abstentionAcc = abstentionAccuracy(retrieved);
       } else {
         recall = recallAtK(retrieved, question.expected_titles, question.k);
