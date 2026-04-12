@@ -179,16 +179,11 @@ export async function generateCorpus(tier, outputDir) {
   const rangeHalf = 182; // ~half of 365
 
   // -------------------------------------------------------------------------
-  // Phase 1: Plan all base entries (before version pairs)
+  // Phase 1: Plan all base entries
   // -------------------------------------------------------------------------
-  // We'll generate floor(totalEntries * 0.9) base entries, then add v2 pairs
-  // for 10% of those, staying within totalEntries.
-  // Total slots = totalEntries. v2 count = floor(totalEntries * 0.1).
-  // base count = totalEntries - v2count.
-  const v2Count = Math.floor(totalEntries * 0.1);
-  const baseCount = totalEntries - v2Count;
+  const baseCount = totalEntries;
 
-  // Build proportional type array for baseCount entries, then shuffle
+  // Build proportional type array for totalEntries entries, then shuffle
   // Distribution: 24% concepts, 20% entities, 16% rules, 10% roles,
   //               10% decisions, 10% glossary, 10% sources
   const RATIOS = [
@@ -206,8 +201,8 @@ export async function generateCorpus(tier, outputDir) {
     const [typeName, ratio] = RATIOS[r];
     // For the last type, use remainder to avoid rounding gaps
     const count = r === RATIOS.length - 1
-      ? baseCount - assigned
-      : Math.round(ratio * baseCount);
+      ? totalEntries - assigned
+      : Math.round(ratio * totalEntries);
     for (let j = 0; j < count; j++) typePool.push(typeName);
     assigned += count;
   }
@@ -215,13 +210,13 @@ export async function generateCorpus(tier, outputDir) {
 
   // Assign domains and confidences
   const shuffledDomains = [];
-  for (let i = 0; i < baseCount; i++) {
+  for (let i = 0; i < totalEntries; i++) {
     shuffledDomains.push(DOMAINS[rng.next() % DOMAINS.length]);
   }
 
   const shuffledConf = rng.shuffle(CONFIDENCES);
   const confidences = [];
-  for (let i = 0; i < baseCount; i++) {
+  for (let i = 0; i < totalEntries; i++) {
     confidences.push(shuffledConf[i % shuffledConf.length]);
   }
 
@@ -239,11 +234,11 @@ export async function generateCorpus(tier, outputDir) {
     return terms;
   }
 
-  // Build base entry metadata (no wikilinks yet)
+  // Build entry metadata (no wikilinks yet)
   const entries = [];
   const titleSet = new Set();
 
-  for (let i = 0; i < baseCount; i++) {
+  for (let i = 0; i < totalEntries; i++) {
     const domain = shuffledDomains[i];
     const type = types[i];
     const confidence = confidences[i];
@@ -277,25 +272,23 @@ export async function generateCorpus(tier, outputDir) {
       updated: dateFromOffset(startMs, updatedOffset),
       uniqueTerms,
       wikilinks: [], // filled in phase 2
-      isV2: false,
-      supersedes: null,
     });
   }
 
   // -------------------------------------------------------------------------
   // Phase 2: Assign wikilinks (connected graph)
   // -------------------------------------------------------------------------
-  // For each base entry, pick 2-3 wikilink targets from other entries.
+  // For each entry, pick 2-3 wikilink targets from other entries.
   // Build an undirected adjacency structure for BFS connectivity check.
-  const adjacency = Array.from({ length: baseCount }, () => new Set());
+  const adjacency = Array.from({ length: totalEntries }, () => new Set());
 
-  for (let i = 0; i < baseCount; i++) {
+  for (let i = 0; i < totalEntries; i++) {
     const count = rng.int(2, 3);
     const targets = new Set();
     let attempts = 0;
-    while (targets.size < count && attempts < baseCount * 2) {
+    while (targets.size < count && attempts < totalEntries * 2) {
       attempts++;
-      const j = rng.next() % baseCount;
+      const j = rng.next() % totalEntries;
       if (j !== i) {
         targets.add(j);
       }
@@ -308,7 +301,7 @@ export async function generateCorpus(tier, outputDir) {
   }
 
   // BFS connectivity check — add bridge links if disconnected
-  const components = findComponents(baseCount, adjacency);
+  const components = findComponents(totalEntries, adjacency);
   if (components.length > 1) {
     for (let c = 1; c < components.length; c++) {
       // Bridge from first node of this component to first node of previous component
@@ -323,45 +316,7 @@ export async function generateCorpus(tier, outputDir) {
   }
 
   // -------------------------------------------------------------------------
-  // Phase 3: Generate v2 version pairs
-  // -------------------------------------------------------------------------
-  // Pick the first v2Count base entries to pair (deterministic).
-  for (let k = 0; k < v2Count; k++) {
-    const original = entries[k];
-    const v2Title = `${original.title} v2`;
-
-    // v2 dates in second half of 365-day range
-    const v2UpdatedOffset = rng.int(rangeHalf + 1, 364);
-    const v2CreatedOffset = rng.int(rangeHalf, v2UpdatedOffset);
-
-    // Shared domain/confidence/type as original
-    const v2TermCount = rng.int(2, 3);
-    const v2UniqueTerms = makeUniqueTerms(original.domain, v2TermCount);
-
-    // v2 also links to same wikilink targets as original (shared vocabulary
-    // signal), plus a supersedes link to the original
-    const v2Wikilinks = [...original.wikilinks];
-    // Include the supersedes link (as wikilink in body text, not in the array
-    // which tracks explicit [[]] links in body — we add it separately in body)
-
-    titleSet.add(v2Title);
-
-    entries.push({
-      title: v2Title,
-      type: original.type,
-      domain: original.domain,
-      confidence: original.confidence,
-      created: dateFromOffset(startMs, v2CreatedOffset),
-      updated: dateFromOffset(startMs, v2UpdatedOffset),
-      uniqueTerms: v2UniqueTerms,
-      wikilinks: v2Wikilinks,
-      isV2: true,
-      supersedes: original.title,
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // Phase 4: Build body text for each entry
+  // Phase 3: Build body text for each entry
   // -------------------------------------------------------------------------
   function buildBody(entry) {
     const domain = entry.domain;
@@ -387,11 +342,6 @@ export async function generateCorpus(tier, outputDir) {
       `Key terms: ${entry.uniqueTerms.join(", ")}.`
     );
 
-    // For v2 entries, add supersedes reference
-    if (entry.isV2 && entry.supersedes) {
-      lines.push(`This supersedes the earlier [[${entry.supersedes}]].`);
-    }
-
     // Additional sentence for body richness
     const n3 = nouns[rng.next() % nouns.length];
     const n4 = nouns[rng.next() % nouns.length];
@@ -405,6 +355,28 @@ export async function generateCorpus(tier, outputDir) {
   // Build bodies (rng must be called in deterministic order — iterate all entries)
   for (const entry of entries) {
     entry.body = buildBody(entry);
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 4: Append ## History sections to 10% of entries
+  // -------------------------------------------------------------------------
+  const historyCount = Math.floor(totalEntries * 0.1);
+  for (let k = 0; k < historyCount; k++) {
+    const entry = entries[k];
+    const noteCount = rng.int(2, 3);
+    const historyTerms = makeUniqueTerms(entry.domain, noteCount);
+    const historyLines = ["", "", "## History", ""];
+    for (let h = 0; h < noteCount; h++) {
+      const dayOffset = rng.int(0, 180);
+      const date = dateFromOffset(startMs, dayOffset);
+      if (h === 0) {
+        historyLines.push(`- **${date}**: Changed from ${historyTerms[h]} to current approach`);
+      } else {
+        historyLines.push(`- **${date}**: Originally described as ${historyTerms[h]} process`);
+      }
+    }
+    entry.body += historyLines.join("\n");
+    entry.historyTerms = historyTerms;
   }
 
   // -------------------------------------------------------------------------
@@ -453,8 +425,8 @@ export async function generateCorpus(tier, outputDir) {
       uniqueTerms: entry.uniqueTerms,
     };
 
-    if (entry.supersedes) {
-      manifestEntry.supersedes = entry.supersedes;
+    if (entry.historyTerms) {
+      manifestEntry.historyTerms = entry.historyTerms;
     }
 
     manifest[entry.title] = manifestEntry;
