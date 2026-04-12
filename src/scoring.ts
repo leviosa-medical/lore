@@ -51,6 +51,21 @@ export function extractBody(content: string): string {
   return match ? match[1].trim() : content.trim();
 }
 
+export const HISTORY_MARKER = "\n## History\n";
+
+/**
+ * Returns the body text with the ## History section stripped for BM25 indexing.
+ * Known limitation: if the body starts exactly with "## History\n" (no preceding
+ * newline), HISTORY_MARKER will not match because it begins with "\n". In practice,
+ * buildPage always places body content before the history section.
+ */
+export function extractSearchableBody(content: string): string {
+  const body = extractBody(content);
+  const idx = body.indexOf(HISTORY_MARKER);
+  if (idx === -1) return body;
+  return body.slice(0, idx).trim();
+}
+
 export function buildPage(
   frontmatter: Frontmatter,
   body: string
@@ -158,7 +173,7 @@ export function computeBM25Scores(
   for (const doc of documents) {
     const metaText = [doc.frontmatter.domain, doc.frontmatter.type, ...(doc.frontmatter.tags || [])].filter(Boolean).join(" ");
     const searchKeys = Array.isArray(doc.frontmatter.search_keys) ? doc.frontmatter.search_keys.join(" ") : "";
-    const bodyText = doc.title + " " + extractBody(doc.content) + " " + searchKeys;
+    const bodyText = doc.title + " " + extractSearchableBody(doc.content) + " " + searchKeys;
     const bodyTokens = tokenize(bodyText);
     const metaTokens = tokenize(metaText);
     const allTokens = [...bodyTokens, ...metaTokens];
