@@ -14,6 +14,9 @@ import {
   buildInboundCounts,
   extractWikilinks,
   buildLookupMaps,
+  buildWikilinkGraph,
+  seededPageRank,
+  MAX_EXPANSION,
   parseFrontmatter,
   buildPage,
   extractBody,
@@ -708,76 +711,54 @@ server.registerTool(
     // Sort by score desc
     results.sort((a, b) => b.score - a.score);
 
-    // Step 5: 1-hop wikilink expansion from top results
+    // Step 5: PPR-based wikilink expansion
     const maxScore = results.length > 0 ? results[0].score : 0;
     const qualifyingResults = maxScore > 0
       ? results.filter((r) => r.score / maxScore >= EXPANSION_THRESHOLD)
       : [];
 
-    let finalResults: typeof results = [];
+    // Build lookup maps and wikilink graph
+    const { titleMap, slugMap } = buildLookupMaps(
+      documents.map((d) => ({ path: d.path, title: d.title }))
+    );
+    const wikilinkGraph = buildWikilinkGraph(
+      documents.map((d) => ({ path: d.path, content: d.content })),
+      titleMap,
+      slugMap
+    );
 
-    // Always expand from top qualifying results (up to 3 sources)
-    const expansionSources = qualifyingResults.slice(0, 3);
-    if (expansionSources.length > 0) {
-      // Build lookup maps for wikilink resolution
-      const { titleMap, slugMap } = buildLookupMaps(
-        documents.map((d) => ({ path: d.path, title: d.title }))
-      );
+    // Seed PPR with qualifying results weighted by BM25 score
+    const seeds = new Map<string, number>();
+    for (const r of qualifyingResults) {
+      seeds.set(r.path, r.score);
+    }
 
-      // Extract wikilinks from top results
-      const existingPaths = new Set(results.map((r) => r.path));
-      const expansionCandidates: Array<{ path: string; parentScore: number }> = [];
+    // Run PPR to discover related nodes via forward, reverse, and 2-hop links
+    const pprScores = seededPageRank(wikilinkGraph, seeds);
 
-      for (const result of expansionSources) {
-        const body = extractBody(result.content);
-        const links = extractWikilinks(body);
+    // Collect paths already present in BM25 results (to avoid score overwrites)
+    const existingPaths = new Set(results.map((r) => r.path));
 
-        for (const linkText of links) {
-          const resolved = await resolveWikilink(linkText, titleMap, slugMap);
-          if (!resolved) continue;
+    // Build expansion candidates: top MAX_EXPANSION non-seed, non-existing nodes by PPR score
+    const expansionCandidates = Array.from(pprScores.entries())
+      .filter(([p]) => !existingPaths.has(p) && !seeds.has(p))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_EXPANSION);
 
-          if (!existingPaths.has(resolved)) {
-            expansionCandidates.push({ path: resolved, parentScore: result.score });
-          }
-        }
-      }
-
-      // Deduplicate and rank by parent score
-      const seen = new Set<string>();
-      const uniqueCandidates = expansionCandidates.filter((c) => {
-        if (seen.has(c.path)) return false;
-        seen.add(c.path);
-        return true;
+    // Look up each expansion candidate in the documents array and assign discounted score
+    const expansionResults: typeof results = [];
+    for (const [candidatePath, pprScore] of expansionCandidates) {
+      const doc = documents.find((d) => d.path === candidatePath);
+      if (!doc) continue;
+      expansionResults.push({
+        ...doc,
+        score: pprScore * maxScore * EXPANSION_DISCOUNT,
       });
-      uniqueCandidates.sort((a, b) => b.parentScore - a.parentScore);
-
-      // Read and append up to 3 expansion pages
-      let expansionCount = 0;
-      for (const candidate of uniqueCandidates) {
-        if (expansionCount >= 3) break;
-        const doc = documents.find((d) => d.path === candidate.path);
-        if (!doc) continue;
-
-        finalResults.push({
-          ...doc,
-          score: candidate.parentScore * EXPANSION_DISCOUNT,
-        });
-        expansionCount++;
-      }
     }
 
-    // Merge expansion pages into results by score
-    if (finalResults.length === 0) {
-      finalResults = [...results];
-    } else {
-      const expansionPaths = new Set(finalResults.map((r) => r.path));
-      const merged = [
-        ...results.filter((r) => !expansionPaths.has(r.path)),
-        ...finalResults,
-      ];
-      merged.sort((a, b) => b.score - a.score);
-      finalResults = merged;
-    }
+    // Merge BM25 results and expansion results sorted by score descending
+    let finalResults = [...results, ...expansionResults];
+    finalResults.sort((a, b) => b.score - a.score);
 
     // Step 6: Collect top results for output
     const topResults = finalResults.slice(0, 10);
